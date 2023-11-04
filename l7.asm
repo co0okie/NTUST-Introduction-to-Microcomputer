@@ -1,8 +1,8 @@
 printNewLine macro
     mov ah, 02h
-    mov dl, 13
+    mov dl, 0dh
     int 21h
-    mov dl, 10
+    mov dl, 0ah
     int 21h
 endm
 
@@ -18,6 +18,8 @@ endm
 ; function prototype
 getNumber proto, pNumber: ptr
 getGCD proto, x: word, y: word
+printUint16 proto, number: word
+printUint32 proto, number: dword
 
 ; string
 enterFirstNumber db "Enter first number: $"
@@ -59,24 +61,19 @@ main proc
         
         ; print result
         printString gcdString
-        mov ax, gcd
-        call printUint16
+        invoke printUint16, gcd
         printNewLine
         printString lcmString
-        mov dx, word ptr lcm + 2
-        mov ax, word ptr lcm
-        call printUInt32
+        invoke printUInt32, lcm
         printNewLine
         
         jmp start
         
     exit:
-    
-    mov ax, 4c00h
-    int 21h
+        mov ax, 4c00h
+        int 21h
 main endp
 
-; void getNumber(uint16 *pNumber)
 getNumber proc, pNumber: ptr
     local char: byte
     
@@ -92,14 +89,14 @@ getNumber proc, pNumber: ptr
         
         cmp al, 1bh ; esc
         je exit
-        cmp al, 13 ; enter(\n)
+        cmp al, 0dh ; enter(\n)
         je nextNumber
         cmp al, 08h ; backspace
-        je backSpace
-        cmp al, "0"
+        je backspace
+        cmp al, '0'
         je isZero ; == 0
         jl getChar ; < 0
-        cmp al, "9"
+        cmp al, '9'
         ja getChar ; > 9
         jmp readChar ; 0 ~ 9
         exit:
@@ -110,7 +107,7 @@ getNumber proc, pNumber: ptr
             cmp word ptr [si], 0
             je getChar
             jmp return
-        backSpace:
+        backspace:
             ; ignore if number == 0
             cmp word ptr [si], 0
             je getChar
@@ -118,7 +115,7 @@ getNumber proc, pNumber: ptr
             mov ah, 02h
             mov dl, 08h
             int 21h
-            mov dl, 20h
+            mov dl, ' '
             int 21h
             mov dl, 08h
             int 21h
@@ -141,7 +138,7 @@ getNumber proc, pNumber: ptr
             ; *pNumber += (char - 30h)
             mov cl, char
             xor ch, ch
-            sub cx, 30h
+            sub cx, '0'
             add ax, cx
             jc getChar ; skip if overflow
             mov [si], ax
@@ -157,7 +154,6 @@ getNumber proc, pNumber: ptr
         ret
 getNumber endp
 
-; uint16 getGCD(uint16 x, uint16 y)
 getGCD proc, x: word, y: word
         mov ax, x
         mov bx, y
@@ -174,14 +170,15 @@ getGCD proc, x: word, y: word
     ret
 getGCD endp
 
-; void printInt16(ax)
-printUint16 proc
+printUint16 proc, number: word
     mov cx, 0
+    mov ax, number
     test ax, ax
-    jne divide10 ; not zero
-        mov dl, 30h ; is zero
+    jne divide10
+        ; print '0' if number == 0
+        mov dl, '0'
         mov ah, 02h
-        int 21h ; print "0"
+        int 21h
         ret
         
     divide10:
@@ -196,7 +193,7 @@ printUint16 proc
     
     printDigit:
         pop dx
-        add dl, 30h
+        add dl, '0'
         mov ah, 02h
         int 21h
         loop printDigit
@@ -204,49 +201,45 @@ printUint16 proc
     ret
 printUint16 endp
 
-; void printUInt32(dx:ax)
-printUInt32 proc
-    local count: word
-    mov count, 0
-    
+printUInt32 proc, number: dword
     mov cx, 0
-    test ax, ax
+    ; check number == 0
+    cmp word ptr number, 0
     jne divide10
-    test dx, dx
+    cmp word ptr number + 2, 0
     jne divide10
-        ; print "0" if dx == 0 && ax == 0
-        mov dl, 30h
+        mov dl, '0'
         mov ah, 02h
         int 21h
         ret
         
     divide10:
         ; dx:ax(1234:5678) / 10
-        ; ((2^16)(1234) + 5678) / 10
-        ; ((2^16)(123 * 10 + 4) + 5678) / 10
-        ; (2^16)(123 * 10) / 10 + (2^16)(4) / 10 + 5678 / 10
-        ; (2^16)(123) + ((2^16)(4) + 5678) / 10
+        ; (1234(2^16) + 5678) / 10
+        ; 1234(2^16) / 10 + 5678 / 10
+        ; (123 + 4 / 10)(2^16) + 5678 / 10
+        ; 123(2^16) + (4(2^16) + 5678) / 10
         ; 123:(4:5678 / 10)
-        push ax ; save 5678
+        
         ; dx:ax(1234) / bx(10) = ax(123) ... dx(4)
-        mov ax, dx
         xor dx, dx
+        mov ax, word ptr number + 2
         mov bx, 10
         div bx
-        mov cx, ax ; save 123 to cx
-        ; dx:ax(4:5678) / bx(10) = ax ... dx
-        pop ax ; get 5678
-        div bx
-        push dx
-        mov dx, cx ; dx = 123
-        inc count
+        mov word ptr number + 2, ax
         
-        test ax, ax
+        ; dx:ax(4:5678) / bx(10) = ax ... dx
+        mov ax, word ptr number
+        div bx
+        mov word ptr number, ax
+        push dx
+        inc cx
+        
+        cmp word ptr number, 0
         jne divide10
-        test dx, dx
+        cmp word ptr number + 2, 0
         jne divide10
-    
-    mov cx, count
+        
     printDigit:
         pop dx
         add dl, 30h
