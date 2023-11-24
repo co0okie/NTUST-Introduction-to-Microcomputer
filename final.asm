@@ -15,34 +15,37 @@ printNewline macro
     pop ax
 endm
 
-.model small, c
+.model compact, c
 .586
 
+screenWidth equ 320 * 256
+screenHeight equ 200 * 256
 
 .data
 drawCircle proto, centerX: word, centerY: word
-printUInt8 proto, number: byte
-printUInt16 proto, number: word
-printUInt32 proto, number: dword
+printInt8 proto, number: byte
+printInt16 proto, number: word
+printInt32 proto, number: dword
 
 msPer1MClock dd 0
 lastTimerCount dd ?
-ballRadius equ 20
+ballPixelRadius equ 20
+ballRadius equ 256 * ballPixelRadius
 circleWidth \
 dw 9, 15, 19, 23, 25, 27, 29, 31, 33, 35, 35, 37, 37, 39, 39, 39, 41, 41, 41, 41, 41, 41, 41, 41, 41
 dw 39, 39, 39, 37, 37, 35, 35, 33, 31, 29, 27, 25, 23, 19, 15, 9
 
 
-ballIntX dw 160
-ballIntY dw 100
-ballX dd 160.0
-ballY dd 100.0
-ballVx dw 3
-ballVy dw 3
+ballPixelX dw 160
+ballPixelY dw 100
+ballX dd 160 * 256 ; pixel/256
+ballY dd 100 * 256 ; pixel/256
+ballVx dd 10 ; pixel/256 / ms
+ballVy dd 10 ; pixel/256 / ms
 loopCounter dd 0
 
 backBuffer segment
-db 320 * 200 dup(0)
+db 320 * 200 dup(?)
 backBuffer ends
 
 .stack 1000h
@@ -82,36 +85,9 @@ main proc
     mov ebx, 1000000
     div ebx
     mov msPer1MClock, eax
-    invoke printUInt32, eax
-    printNewline
     
-    
-    ; rdtsc
-    ; push eax
-    ; in al, 40h
-    ; mov bl, al
-    ; in al, 40h
-    ; mov bh, al
-    ; mov cx, 8000h
-    ; calculateCPUCycle:
-    ;     loop calculateCPUCycle
-    ; rdtsc
-    ; push eax
-    ; in al, 40h
-    ; mov cl, al
-    ; in al, 40h
-    ; mov ch, al
-    ; sub bx, cx
-    ; pop eax
-    ; pop edx
-    ; sub eax, edx
-    ; invoke printUInt16, bx
-    ; printNewline
-    ; invoke printUInt32, eax
-    ; printNewline
-    
-    mov ah, 00h
-    int 16h
+    rdtsc
+    mov lastTimerCount, eax
     
     refresh:
         ; clear backbuffer
@@ -134,29 +110,70 @@ main proc
         mov ebx, eax
         sub eax, lastTimerCount
         mov lastTimerCount, ebx
+        mul msPer1MClock
+        shr eax, 20
         mov ecx, eax
-        
-        invoke printUInt32, lastTimerCount
+        ; mov ecx, 28 ; step animation debug use
+        invoke printInt32, ecx
         printNewline
-        invoke printUInt32, eax
-        
+                
         ; step
+        ; ds = v * dt
+        ; dv = a * dt
+        mov eax, ecx
+        mov ebx, ballVx
+        imul ebx
+        add ballX, eax
+        mov eax, ecx
+        mov ebx, ballVy
+        imul ebx
+        add ballY, eax
+        inc ballVy
         
-        mov ax, ballVx
-        ; add ballVy, 1
-        mov bx, ballVy
-        add ballIntX, ax
-        add ballIntY, bx
-        
-        .if ballIntX <= ballRadius || ballIntX >= 320 - ballRadius
+        .if ballX <= ballRadius && sdword ptr ballVx < 0
             neg ballVx
+            mov eax, ballRadius
+            sub eax, ballX
+            add eax, eax
+            add ballX, eax
+        .elseif ballX >= screenWidth - ballRadius && sdword ptr ballVx > 0
+            neg ballVx
+            mov eax, screenWidth - ballRadius
+            sub eax, ballX
+            add eax, eax
+            add ballX, eax
         .endif
-        .if ballIntY <= ballRadius || ballIntY >= 200 - ballRadius
+        .if ballY <= ballRadius && sdword ptr ballVy < 0
             neg ballVy
+            mov eax, ballRadius
+            sub eax, ballY
+            add eax, eax
+            add ballY, eax
+        .elseif ballY >= screenHeight - ballRadius && sdword ptr ballVy > 0
+            neg ballVy
+            mov eax, screenHeight - ballRadius
+            sub eax, ballY
+            add eax, eax
+            add ballY, eax
         .endif
+        
+        invoke printInt32, ballX
+        printNewline
+        invoke printInt32, ballY
+        printNewline
+        invoke printInt16, word ptr [ballX + 1]
+        printNewline
+        invoke printInt16, word ptr [ballY + 1]
+        printNewline
+        invoke printInt32, ballVx
+        printNewline
+        invoke printInt32, ballVy
+        printNewline
         
         ; draw to backbuffer
-        invoke drawCircle, ballIntX, ballIntY
+        mov ax, backBuffer
+        mov es, ax
+        invoke drawCircle, word ptr [ballX + 1], word ptr [ballY + 1]
         
         ; VSync
         mov dx, 03dah
@@ -181,8 +198,6 @@ main proc
         rep movsd
         pop ds
         
-        
-    
         ; delay
         ; mov ah, 86h
         ; mov cx, 0
@@ -205,7 +220,7 @@ main endp
 drawCircle proc, centerX: word, centerY: word
     ; di = (centerY - ballRadius) * 320 + (centerX - circleWidth[0] >> 1)
     mov ax, centerY
-    sub ax, ballRadius
+    sub ax, ballPixelRadius
     mov bx, 320
     mul bx
     add ax, centerX
@@ -217,7 +232,7 @@ drawCircle proc, centerX: word, centerY: word
     ; si end = &circleWidth[0] + sizeof circleWidth
     lea si, circleWidth
     mov bx, si
-    add bx, (ballRadius * 2 + 1) * 2 ; 2bytes * (2r + 1)
+    add bx, (ballPixelRadius * 2 + 1) * 2 ; 2bytes * (2r + 1)
     
     mov al, 00fh ; color white
     .while si != bx
@@ -236,15 +251,19 @@ drawCircle proc, centerX: word, centerY: word
     
     ret
 drawCircle endp
-printUInt8 proc uses ax dx ds si, number: byte
-    local outputString[4]: byte
+printInt8 proc uses ax dx ds si, number: byte
+    local outputString[5]: byte
     
-    mov si, 3
+    mov si, 4
     mov outputString[si], '$'
     
     mov dl, 10
     mov al, number
     test al, al
+    jns notNegative
+        neg al
+        jmp divide10
+    notNegative:
     jne divide10
         ; print '0' if number == 0
         mov dl, '0'
@@ -262,6 +281,12 @@ printUInt8 proc uses ax dx ds si, number: byte
         test al, al
         jne divide10
     
+    mov al, number
+    test al, al
+    jns notNegative2
+        dec si
+        mov outputString[si], '-'
+    notNegative2:
     mov ax, ss
     mov ds, ax
     mov ah, 09h
@@ -269,16 +294,20 @@ printUInt8 proc uses ax dx ds si, number: byte
     int 21h
     
     ret
-printUInt8 endp
-printUInt16 proc uses ax cx dx ds si, number: word
-    local outputString[6]: byte
+printInt8 endp
+printInt16 proc uses ax cx dx ds si, number: word
+    local outputString[7]: byte
     
-    mov si, 5
+    mov si, 6
     mov outputString[si], '$'
     
     mov cx, 10
     mov ax, number
     test ax, ax
+    jns notNegative
+        neg ax
+        jmp divide10
+    notNegative:
     jne divide10
         ; print '0' if number == 0
         mov dl, '0'
@@ -296,6 +325,12 @@ printUInt16 proc uses ax cx dx ds si, number: word
         test ax, ax
         jne divide10
     
+    mov ax, number
+    test ax, ax
+    jns notNegative2
+        dec si
+        mov outputString[si], '-'
+    notNegative2:
     mov ax, ss
     mov ds, ax
     mov ah, 09h
@@ -303,16 +338,20 @@ printUInt16 proc uses ax cx dx ds si, number: word
     int 21h
     
     ret
-printUInt16 endp
-printUInt32 proc uses eax cx dx ds si, number: dword
-    local outputString[11]: byte
+printInt16 endp
+printInt32 proc uses eax cx dx ds si, number: dword
+    local outputString[12]: byte
     
-    mov si, 10
+    mov si, 11
     mov outputString[si], '$'
     
     mov ecx, 10
     mov eax, number
     test eax, eax
+    jns notNegative
+        neg eax
+        jmp divide10
+    notNegative:
     jne divide10
         ; print '0' if number == 0
         mov dl, '0'
@@ -329,7 +368,13 @@ printUInt32 proc uses eax cx dx ds si, number: dword
         
         test eax, eax
         jne divide10
-    
+        
+    mov eax, number
+    test eax, eax
+    jns notNegative2
+        dec si
+        mov outputString[si], '-'
+    notNegative2:
     mov ax, ss
     mov ds, ax
     mov ah, 09h
@@ -337,5 +382,5 @@ printUInt32 proc uses eax cx dx ds si, number: dword
     int 21h
     
     ret
-printUInt32 endp
+printInt32 endp
 end main
