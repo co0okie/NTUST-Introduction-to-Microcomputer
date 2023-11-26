@@ -15,7 +15,8 @@ printNewline macro
     pop ax
 endm
 
-.model compact, c
+; https://learn.microsoft.com/en-us/cpp/assembler/masm/dot-model?view=msvc-170
+.model compact, c, farstack ; multiple data segment, calling convention, independent stack (SS != DS)
 .586
 
 screenWidth equ 320 * 256
@@ -35,7 +36,6 @@ circleWidth \
 dw 9, 15, 19, 23, 25, 27, 29, 31, 33, 35, 35, 37, 37, 39, 39, 39, 41, 41, 41, 41, 41, 41, 41, 41, 41
 dw 39, 39, 39, 37, 37, 35, 35, 33, 31, 29, 27, 25, 23, 19, 15, 9
 
-
 ballPixelX dw 160
 ballPixelY dw 100
 ballX dd 160 * 256 ; pixel/256
@@ -44,9 +44,8 @@ ballVx dd 10 ; pixel/256 / ms
 ballVy dd 10 ; pixel/256 / ms
 loopCounter dd 0
 
-backBuffer segment
-db 320 * 200 dup(?)
-backBuffer ends
+.fardata? ; uninitialize fardata to save exe file size
+db 320 * 200 dup(?) ; video backbuffer
 
 .stack 1000h
 .code
@@ -91,7 +90,8 @@ main proc
     
     refresh:
         ; clear backbuffer
-        mov ax, backBuffer
+        ; mov ax, backBuffer
+        mov ax, @fardata?
         mov es, ax
         xor eax, eax
         xor di, di
@@ -171,7 +171,8 @@ main proc
         printNewline
         
         ; draw to backbuffer
-        mov ax, backBuffer
+        ; mov ax, backBuffer
+        mov ax, @fardata?
         mov es, ax
         invoke drawCircle, word ptr [ballX + 1], word ptr [ballY + 1]
         
@@ -188,7 +189,8 @@ main proc
         
         ; backbuffer -> video memory
         push ds
-        mov ax, backBuffer
+        ; mov ax, backBuffer
+        mov ax, @fardata?
         mov ds, ax
         mov ax, 0a000h
         mov es, ax
