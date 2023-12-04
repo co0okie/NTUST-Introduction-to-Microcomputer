@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<head>
+  <meta charset="UTF-8">
+  <title>image to data</title>
+  <style>
+  </style>
+</head>
+<body>
+  <input type="file" id="imageFile">
+  <canvas width="0" height="0" id="canvas"></canvas>
+  <div id="result"></div>
+</body>
+</html>
+
+<script>
+const input = document.getElementById('imageFile');
+const canvas = document.getElementById('canvas')
+const context = canvas.getContext('2d');
+input.addEventListener('change', e => {
+  console.log('change');
+  const reader = new FileReader();
+  reader.onload = e => {
+    const image = new Image();
+    image.onload = e => {
+      canvas.width = image.width;
+      canvas.height = image.height;
+      context.drawImage(image, 0, 0);
+      const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+      const data = imageData.data;
+      const dbArray = [];
+      for (let row = 0; row < imageData.height; row++) {
+        for (let col = 0; col < imageData.width; col++) {
+          const index = (row * imageData.width + col) * 4;
+          const byte = data[index] + data[index + 1] + data[index + 2] + data[index + 3] < 128 * 4 ? '15' : '0';
+          dbArray.push(byte);
+        }
+      }
+      let text = `width: ${imageData.width}, height: ${imageData.height}<br>`;
+      text += dbArray.join(' ')
+        .replace(/(?![^\n]{1,80}$)([^\n]{1,80})\s/g, '$1\n')
+        .replace(/ /g, ',')
+        .replace(/^/, 'db ')
+        .replace(/\n/g, '<br>db ');
+      document.getElementById('result').innerHTML = text;
+    };
+    image.src = reader.result;
+  };
+  reader.readAsDataURL(input.files[0]);
+})
+</script>

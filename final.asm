@@ -17,7 +17,7 @@ printNewline macro
     pop dx
     pop ax
 endm
-matrix_x_vector macro m11, m21, m12, m22, v1, v2 ; index of fpu stack, result replace v1, v2
+matrix_x_vector macro m11, m21, m12, m22, v1, v2 ; index of fpu stack, result stored in v1, v2
     ; /m11 m12\ /v1\ = /m11 * v1 + m12 * v2\
     ; \m21 m22/ \v2/   \m21 * v1 + m22 * v2/
     fld st(v1) ; st: [v1]...[v1][v2]
@@ -59,20 +59,22 @@ printInt8 proto, number: byte
 printInt16 proto, number: word
 printInt32 proto, number: dword
 
-circlePixelRadius equ 20
-circleRadius real8 20.0
+circlePixelRadius equ 16
+circleRadius real8 16.0
 circleWidth \
-dw 9, 15, 19, 23, 25, 27, 29, 31, 33, 35, 35, 37, 37, 39, 39, 39, 41, 41, 41, 41, 41, 41, 41, 41, 41
-dw 39, 39, 39, 37, 37, 35, 35, 33, 31, 29, 27, 25, 23, 19, 15, 9
+dw 9, 13, 17, 21, 23, 25, 27, 27, 29, 29, 31, 31, 33, 33, 33, 33, 33, 33, 33, 33, 33, 31, 31, 29, 29
+dw 27, 27, 25, 23, 21, 17, 13, 9
 circle struct
     x real8 ?
     y real8 ?
     vx real8 ?
     vy real8 ?
+    integerX dw ?
+    integerY dw ?
 circle ends
 wallRebound proto, pBall: ptr circle
-ball1 circle <120.0, 100.0, -300.0, -300.0>
-ball2 circle <200.0, 100.0, 100.0, 100.0>
+ball1 circle <120.0, 100.0, 100.0, 200.0>
+ball2 circle <200.0, 100.0, 300.0, 400.0>
 
 clockPeriod real8 ?
 lastTimerCount dd ?
@@ -81,7 +83,9 @@ fpuTemp dword ?
 fpuTempTbyte dt ?
 widthMinusRadius real8 screenWidth
 heightMinusRadius real8 screenHeight
-frictionCoefficient real8 30.0
+frictionCoefficient real8 50.0
+
+mouseButtonStatus db ?
 
 debugCounter dw 0
 
@@ -101,6 +105,14 @@ main proc
     fstp [widthMinusRadius] ; st: [radius]
     fsubr [heightMinusRadius] ; st: [height - radius]
     fstp [heightMinusRadius] ; st: []
+    fld [ball1.x] ; st: [x]
+    fistp [ball1.integerX] ; st: []
+    fld [ball1.y] ; st: [x]
+    fistp [ball1.integerY] ; st: []
+    fld [ball2.x] ; st: [x]
+    fistp [ball2.integerX] ; st: []
+    fld [ball2.y] ; st: [x]
+    fistp [ball2.integerY] ; st: []
     
     
     ; video mode, 320 * 200, 256 colors
@@ -156,6 +168,9 @@ main proc
     mov ah, 00h
     int 16h
     
+    mov ax, 03h
+    int 33h
+    mov mouseButtonStatus, bl
     
     rdtsc
     mov [lastTimerCount], eax
@@ -169,7 +184,7 @@ main proc
         mov cx, (320 * 200) / 4
         rep stosd
         
-        ; move text cursor
+        ; move text cursor to top left
         mov ah, 02h
         xor bh, bh
         xor dh, dh
@@ -199,6 +214,35 @@ main proc
         invoke step, addr ball2
         fstp st ; st: []
         
+        mov ax, 03h
+        int 33h
+        shr cx, 1
+        invoke printUint16, cx
+        printNewline
+        invoke printUint16, dx
+        printNewline
+        ; wait for negative edge
+        test mouseButtonStatus, 001b
+        jz @f ; not pressed
+        test bl, 001b
+        jnz @f ; pressed but not released
+            mov word ptr [fpuTemp], cx
+            fild word ptr [fpuTemp] ; st: [mouseX]
+            fsub [ball1.x] ; st: [mouseX - x1]
+            fldpi ; st: [pi][mouseX - x1]
+            fmul ; st: [pi * (mouseX - x1)]
+            ; fsqrt
+            fstp [ball1.vx] ; st: []
+            mov word ptr [fpuTemp], dx
+            fild word ptr [fpuTemp] ; st: [mouseY]
+            fsub [ball1.y] ; st: [mouseY - y1]
+            fldpi ; st: [pi][mouseY - y1]
+            fmul ; st: [pi * (mouseY - y1)]
+            ; fsqrt
+            fstp [ball1.vy] ; st: []
+        @@:
+        mov mouseButtonStatus, bl
+        
         ; wall collision
         fld [heightMinusRadius] ; st: [h - r]
         fld [widthMinusRadius] ; st: [w - r][h - r]
@@ -217,14 +261,6 @@ main proc
         ; \ny ty/ = \ny  nx/ , orthonormal basis
         ; /nx -ny\-1  /nx -ny\T  / nx ny\ , XY coordinate => NT coordinate
         ; \ny  nx/  = \ny  nx/ = \-ny nx/
-        ; / nx ny\ /v1x\ = /v1n\
-        ; \-ny nx/ \v1y/   \v1t/
-        ; / nx ny\ /v2x\ = /v2n\
-        ; \-ny nx/ \v2y/   \v2t/
-        ; /nx -ny\ /v2n\ = v1': v1 after collision
-        ; \ny  nx/ \v1t/
-        ; /nx -ny\ /v1n\ = v2': v2 after collision
-        ; \ny  nx/ \v2t/
         fld [ball1.y] ; st: [y1]
         fsub [ball2.y] ; st: [y1 - y2 = dy]
         fld [ball1.x] ; st: [x1][dy]
@@ -246,14 +282,22 @@ main proc
             fchs ; st: [-ny][nx][ny]
             fld [ball1.vy] ; st: [v1y][-ny][nx][ny]
             fld [ball1.vx] ; st: [v1x][v1y][-ny][nx][ny]
+            ; / nx ny\ /v1x\ = /v1n\
+            ; \-ny nx/ \v1y/   \v1t/
             matrix_x_vector 3, 2, 4, 3, 0, 1 ; st: [v1n][v1t][-ny][nx][ny]
             fstp [fpuTempTbyte] ; st: [v1t][-ny][nx][ny]
             fld [ball2.vy] ; st: [v2y][v1t][-ny][nx][ny]
             fld [ball2.vx] ; st: [v2x][v2y][v1t][-ny][nx][ny]
+            ; / nx ny\ /v2x\ = /v2n\
+            ; \-ny nx/ \v2y/   \v2t/
             matrix_x_vector 4, 3, 5, 4, 0, 1 ; st: [v2n][v2t][v1t][-ny][nx][ny]
+            ; /nx -ny\ /v2n\ = v1': v1 after collision
+            ; \ny  nx/ \v1t/
             matrix_x_vector 4, 5, 3, 4, 0, 2 ; st: [v1x'][v2t][v1y'][-ny][nx][ny]
             fstp [ball1.vx] ; st: [v2t][v1y'][-ny][nx][ny]
             fld [fpuTempTbyte] ; st: [v1n][v2t][v1y'][-ny][nx][ny]
+            ; /nx -ny\ /v1n\ = v2': v2 after collision
+            ; \ny  nx/ \v2t/
             matrix_x_vector 4, 5, 3, 4, 0, 1 ; st: [v2x'][v2y'][v1y'][-ny][nx][ny]
             fstp [ball2.vx] ; st: [v2y'][v1y'][-ny][nx][ny]
             fstp [ball2.vy] ; st: [v1y'][-ny][nx][ny]
@@ -261,22 +305,6 @@ main proc
         @@:
         finit ; st: []
         
-        fld [ball1.x]
-        fistp [fpuTemp]
-        invoke printInt32, [fpuTemp]
-        printNewline
-        fld [ball1.y]
-        fistp [fpuTemp]
-        invoke printInt32, [fpuTemp]
-        printNewline
-        fld [ball1.vx]
-        fistp [fpuTemp]
-        invoke printInt32, [fpuTemp]
-        printNewline
-        fld [ball1.vy]
-        fistp [fpuTemp]
-        invoke printInt32, [fpuTemp]
-        printNewline
         
         ; invoke printUint16, [debugCounter]
         ; printNewline
@@ -284,16 +312,18 @@ main proc
         ; draw to backbuffer
         mov ax, @fardata
         mov es, ax
-        fld [ball1.x] ; st: [x]
-        fistp word ptr [fpuTemp + 2] ; st: []
-        fld [ball1.y] ; st: [y]
-        fistp word ptr [fpuTemp] ; st: []
-        invoke drawCircle, word ptr [fpuTemp + 2], word ptr [fpuTemp]
-        fld [ball2.x] ; st: [x]
-        fistp word ptr [fpuTemp + 2] ; st: []
-        fld [ball2.y] ; st: [y]
-        fistp word ptr [fpuTemp] ; st: []
-        invoke drawCircle, word ptr [fpuTemp + 2], word ptr [fpuTemp]
+        ; fld [ball1.x] ; st: [x]
+        ; fistp word ptr [fpuTemp + 2] ; st: []
+        ; fld [ball1.y] ; st: [y]
+        ; fistp word ptr [fpuTemp] ; st: []
+        ; invoke drawCircle, word ptr [fpuTemp + 2], word ptr [fpuTemp]
+        ; fld [ball2.x] ; st: [x]
+        ; fistp word ptr [fpuTemp + 2] ; st: []
+        ; fld [ball2.y] ; st: [y]
+        ; fistp word ptr [fpuTemp] ; st: []
+        ; invoke drawCircle, word ptr [fpuTemp + 2], word ptr [fpuTemp]
+        invoke drawCircle, [ball1.integerX], [ball1.integerY]
+        invoke drawCircle, [ball2.integerX], [ball2.integerY]
         
         ; VSync
         mov dx, 03dah
@@ -324,7 +354,7 @@ main proc
         ; mov dx, 40000
         ; int 15h
         
-        
+        inc [debugCounter]
         ; mov ah, 00h
         ; int 16h
         ; cmp al, 1bh
@@ -348,11 +378,13 @@ step proc, pBall: ptr circle ; st: [dt]
     fld [(circle ptr [si]).vx] ; st: [vx][dt]
     fmul st, st(1) ; st: [vx * dt][dt]
     fadd [(circle ptr [si]).x] ; st: [x + vx * dt][dt] = [newX][dt]
+    fist [(circle ptr [si]).integerX]
     fstp [(circle ptr [si]).x] ; st: [dt]
     ; newY = y + vy * dt
     fld [(circle ptr [si]).vy] ; st: [vy][dt]
     fmul st, st(1) ; st: [vy * dt][dt]
     fadd [(circle ptr [si]).y] ; st: [y + vy * dt][dt] = [newY1][dt]
+    fist [(circle ptr [si]).integerY]
     fstp [(circle ptr [si]).y] ; st: [dt]
     
     ; friction:
@@ -360,28 +392,28 @@ step proc, pBall: ptr circle ; st: [dt]
     ;   a = -k_f * n / m * (-v / ||v||) = -k * v / ||v||
     ;   v = v0 + a0 * dt = v0 - k * v0 / ||v0|| * dt 
     ;     = v0 * (1 - k * dt / ||v0||), k > 0, 1 - k * dt / ||v0|| >= 0
-    ; fld [(circle ptr [si]).vx] ; st: [vx][dt]
-    ; fmul st, st ; st: [vx^2][dt]
-    ; fld [(circle ptr [si]).vy] ; st: [vy][vx^2][dt]
-    ; fmul st, st ; st: [vy^2][vx^2][dt]
-    ; faddp st(1), st ; st: [vx^2 + vy^2][dt]
-    ; fsqrt ; st: [||v||][dt]
-    ; fdivr st, st(1) ; st: [dt / ||v||][dt]
-    ; fmul [frictionCoefficient] ; st: [k * dt / ||v||][dt]
-    ; fld1 ; st: [1][k * dt / ||v||][dt]
-    ; fsubrp st(1), st ; st: [1 - k * dt / ||v||][dt]
-    ; fldz ; st: [0][1 - k * dt / ||v||][dt]
-    ; fcomip_ 1 ; st: [1 - k * dt / ||v||][dt]
-    ; jbe @f ; 0 <= 1 - k * dt / ||v||
-    ;     fstp st ; st: [dt]
-    ;     fldz ; st: [0][dt]
-    ; @@:
-    ; fld [(circle ptr [si]).vx] ; st: [vx][1 - k * dt / ||v||][dt]
-    ; fmul st, st(1) ; st: [vx * (1 - k * dt / ||v||)][1 - k * dt / ||v||][dt]
-    ; fstp [(circle ptr [si]).vx] ; st: [1 - k * dt / ||v||][dt]
-    ; fld [(circle ptr [si]).vy] ; st: [vy][1 - k * dt / ||v||][dt]
-    ; fmul ; st: [vy * (1 - k * dt / ||v||)][dt]
-    ; fstp [(circle ptr [si]).vy] ; st: [dt]
+    fld [(circle ptr [si]).vx] ; st: [vx][dt]
+    fmul st, st ; st: [vx^2][dt]
+    fld [(circle ptr [si]).vy] ; st: [vy][vx^2][dt]
+    fmul st, st ; st: [vy^2][vx^2][dt]
+    faddp st(1), st ; st: [vx^2 + vy^2][dt]
+    fsqrt ; st: [||v||][dt]
+    fdivr st, st(1) ; st: [dt / ||v||][dt]
+    fmul [frictionCoefficient] ; st: [k * dt / ||v||][dt]
+    fld1 ; st: [1][k * dt / ||v||][dt]
+    fsubrp st(1), st ; st: [1 - k * dt / ||v||][dt]
+    fldz ; st: [0][1 - k * dt / ||v||][dt]
+    fcomip_ 1 ; st: [1 - k * dt / ||v||][dt]
+    jbe @f ; 0 <= 1 - k * dt / ||v||
+        fstp st ; st: [dt]
+        fldz ; st: [0][dt]
+    @@:
+    fld [(circle ptr [si]).vx] ; st: [vx][1 - k * dt / ||v||][dt]
+    fmul st, st(1) ; st: [vx * (1 - k * dt / ||v||)][1 - k * dt / ||v||][dt]
+    fstp [(circle ptr [si]).vx] ; st: [1 - k * dt / ||v||][dt]
+    fld [(circle ptr [si]).vy] ; st: [vy][1 - k * dt / ||v||][dt]
+    fmul ; st: [vy * (1 - k * dt / ||v||)][dt]
+    fstp [(circle ptr [si]).vy] ; st: [dt]
     
     ret
 step endp
