@@ -6,6 +6,9 @@
   </style>
 </head>
 <body>
+  <div>
+    選擇圖片，下面會出現圖片的長寬和它在masm data segment裡被宣告的樣子
+  </div>
   <input type="file" id="imageFile">
   <canvas width="0" height="0" id="canvas"></canvas>
   <div id="result"></div>
@@ -37,7 +40,7 @@ input.addEventListener('change', e => {
       }
       let text = `width: ${imageData.width}, height: ${imageData.height}<br>`;
       text += dbArray.join(' ')
-        .replace(/(?![^\n]{1,80}$)([^\n]{1,80})\s/g, '$1\n')
+        .replace(/(?![^\n]{1,90}$)([^\n]{1,90})\s/g, '$1\n')
         .replace(/ /g, ',')
         .replace(/^/, 'db ')
         .replace(/\n/g, '<br>db ');
