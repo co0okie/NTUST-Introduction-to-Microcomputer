@@ -52,6 +52,7 @@ screenHeight equ 200.0
 .data
 step proto, pBall: ptr circle
 drawCircle proto, centerX: word, centerY: word
+drawLine proto, x0: word, y0: word, x1: word, y1: word
 printUint8 proto, number: byte
 printUint16 proto, number: word
 printUInt32 proto, number: dword
@@ -199,7 +200,7 @@ main proc
     rdtsc
     mov [lastTimerCount], eax
     
-    refresh:
+    .repeat
         ; clear backbuffer
         mov ax, backBuffer
         mov es, ax
@@ -332,8 +333,9 @@ main proc
         ; round not over yet && all velocity == 0: end of round
         mov eax, 7fffffffh ; 01111...111b
         .if [gameStatus] & 00000001b && !([ball1.vx] & eax) && !([ball1.vy] & eax) && !([ball2.vx] & eax) && !([ball1.vy] & eax)
-            btr word ptr [gameStatus], 0
-            btc word ptr [gameStatus], 1 ; the other player's turn
+            xor [gameStatus], 00000011b ; end round, change player
+            ; btr word ptr [gameStatus], 0
+            ; btc word ptr [gameStatus], 1 ; the other player's turn
         .endif
         
         invoke printBinary, [gameStatus]
@@ -347,6 +349,17 @@ main proc
         mov es, ax
         invoke drawCircle, [ball1.integerX], [ball1.integerY]
         invoke drawCircle, [ball2.integerX], [ball2.integerY]
+        ; draw line
+        mov ax, 03h
+        int 33h
+        shr cx, 1
+        .if !([gameStatus] & 00000001b) ; if round not start yet
+            .if [gameStatus] & 00000010b ; if player2's turn
+                invoke drawLine, ball2.integerX, ball2.integerY, cx, dx
+            .else
+                invoke drawLine, ball1.integerX, ball1.integerY, cx, dx
+            .endif
+        .endif
         
         ; VSync
         mov dx, 03dah
@@ -385,7 +398,7 @@ main proc
         mov ah, 06h
         mov dl, 0ffh
         int 21h
-        jz refresh
+    .until !zero?
     
     exit:
         mov ax, 03h
@@ -424,12 +437,6 @@ step proc, pBall: ptr circle ; st: [dt]
     fmul [frictionCoefficient] ; st: [k * dt / ||v||][dt]
     fld1 ; st: [1][k * dt / ||v||][dt]
     fsubrp st(1), st ; st: [1 - k * dt / ||v||][dt]
-    ; fldz ; st: [0][1 - k * dt / ||v||][dt]
-    ; fcomip_ 1 ; st: [1 - k * dt / ||v||][dt]
-    ; jbe @f ; 0 <= 1 - k * dt / ||v||
-    ;     fstp st ; st: [dt]
-    ;     fldz ; st: [0][dt]
-    ; @@:
     ; if v < 0: v = 0
     ftst
     fstsw ax
@@ -533,6 +540,65 @@ drawCircle proc, centerX: word, centerY: word
     
     ret
 drawCircle endp
+drawLine proc, x0: word, y0: word, x1: word, y1: word
+    local sx: word, sy: word, sydi: word, error: word, deltax: word, deltay: word
+    mov ax, x1
+    sub ax, x0
+    .if sign? ; x1 - x0 < 0
+        neg ax
+        mov deltax, ax
+        mov sx, -1
+    .else
+        mov deltax, ax
+        mov sx, 1
+    .endif
+    mov bx, y1
+    sub bx, y0
+    .if sign? ; y1 - y0 < 0
+        mov deltay, bx
+        mov sy, -1
+        mov sydi, -320
+    .else
+        neg bx
+        mov deltay, bx
+        mov sy, 1
+        mov sydi, 320
+    .endif
+    add ax, bx
+    mov error, ax ; error = dx + dy
+    
+    mov ax, 320
+    mul y0
+    add ax, x0
+    mov di, ax
+    
+    ; cx = x0, dx = y0, bx = e2
+    mov cx, x0
+    mov dx, y0
+    .while 1
+        mov al, 0fh
+        mov es:[di], al
+        .break .if cx == x1 && dx == y1
+        mov bx, error
+        add bx, bx
+        .if sword ptr bx >= deltay
+            .break .if cx == x1
+            mov ax, deltay
+            add error, ax
+            add cx, sx
+            add di, sx
+        .endif
+        .if sword ptr bx <= deltax
+            .break .if dx == y1
+            mov ax, deltax
+            add error, ax
+            add dx, sy
+            add di, sydi
+        .endif
+    .endw
+    
+    ret
+drawLine endp
 printUint8 proc uses ax dx ds si, number: byte
     local outputString[4]: byte
     
