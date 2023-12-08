@@ -103,7 +103,7 @@ wallEffect wallEffectPtr 8 dup(noEffect), 13 dup(increaseScore), 5 dup(decreaseS
 wallColor db 26 dup(?)
 
 debugVariable dw 0
-
+dashedlineColor db 0fh, 0fh, 0fh, 0fh, 0fh, 00h, 00h, 00h
 .fardata backBuffer
 db 320 * 200 dup(?) ; video backbuffer
 
@@ -386,6 +386,7 @@ main proc
         mov ax, 03h
         int 33h
         shr cx, 1
+        mov si, 0h
         .if !([gameStatus] & 00000001b) ; if round not start yet
             .if [gameStatus] & 00000010b ; if player2's turn
                 invoke drawLine, ball2.integerX, ball2.integerY, cx, dx
@@ -680,11 +681,11 @@ drawCircle proc, centerX: word, centerY: word
     
     ret
 drawCircle endp
-drawLine proc, x0: word, y0: word, x1: word, y1: word
+drawLine proc, x0: word, y0: word, x1: word, y1: word ; si would be the flashing clock
     local sx: word, sy: word, sydi: word, error: word, deltax: word, deltay: word
     mov ax, x1
     sub ax, x0
-    .if sign? ; x1 - x0 < 0
+    .if sign? ; x1 - x0 < 0, check sign flag
         neg ax
         mov deltax, ax
         mov sx, -1
@@ -716,8 +717,10 @@ drawLine proc, x0: word, y0: word, x1: word, y1: word
     mov cx, x0
     mov dx, y0
     .while 1
-        mov al, 0fh
+        mov al, [dashedlineColor + si]
         mov es:[di], al
+        inc si
+        and si, 0111b ; clear si, if si > 7
         .break .if cx == x1 && dx == y1
         mov bx, error
         add bx, bx
