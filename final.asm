@@ -3,6 +3,8 @@
 ; https://www.ctyme.com/intr/int.htm
 ; https://www.website.masmforum.com/tutorials/fptute/
 ; https://stackoverflow.com/questions/13450894/struct-or-class-in-assembly
+; https://en.wikipedia.org/wiki/Linear_congruential_generator#Parameters_in_common_use
+; https://masm32.com/board/index.php?topic=7837.0
 
 printNewline macro
     push ax
@@ -50,7 +52,7 @@ screenWidth equ 320.0
 screenHeight equ 200.0
 
 .data
-step proto, pBall: ptr circle
+step proto, pBall: near ptr circle
 drawCircle proto, centerX: word, centerY: word
 drawLine proto, x0: word, y0: word, x1: word, y1: word
 printUint8 proto, number: byte
@@ -74,8 +76,9 @@ circle struct
     vy real4 ?
     integerX dw ?
     integerY dw ?
+    score dw 0
 circle ends
-wallRebound proto, pBall: ptr circle
+wallCollision proto, pBall: near ptr circle
 ball1 circle <120.0, 100.0, 0.0, 0.0>
 ball2 circle <200.0, 100.0, 0.0, 0.0>
 
@@ -94,7 +97,12 @@ gameStatus db 00000000b
 ; [0] 1: round start, 0: round end
 ; [1] 0: player1's turn, 1: player2's turn
 
-debugCounter dw 0
+wallEffectProto typedef proto
+wallEffectPtr typedef near ptr wallEffectProto
+wallEffect wallEffectPtr 8 dup(noEffect), 13 dup(increaseScore), 5 dup(decreaseScore)
+wallColor db 26 dup(?)
+
+debugVariable dw 0
 
 .fardata backBuffer
 db 320 * 200 dup(?) ; video backbuffer
@@ -105,7 +113,7 @@ main proc
     .startup
     finit ; init fpu
     
-    ; calculate floating-point constant
+    ; load or calculate fpu related number
     fld [circleRadius] ; st: [radius]
     fld [widthMinusRadius] ; st: [width][radius]
     fsub st, st(1) ; st: [width - radius][radius]
@@ -121,6 +129,25 @@ main proc
     fld [ball2.y] ; st: [x]
     fistp [ball2.integerY] ; st: []
     
+    ; decide wall color
+    lea si, [wallEffect]
+    lea di, [wallColor]
+    assume di: near ptr byte
+    .while si != offset [wallEffect + sizeof wallEffect]
+        .if [si] == noEffect
+            mov [di], 0fh ; white
+        .elseif [si] == increaseScore
+            mov [di], 2fh ; green
+        .elseif [si] == decreaseScore
+            mov [di], 28h ; red
+        .else
+            mov [di], 00h ; black
+        .endif
+        
+        add si, 2
+        inc di
+    .endw
+    assume di: nothing
     
     ; video mode, 320 * 200, 256 colors
     mov ax, 13h
@@ -272,8 +299,8 @@ main proc
         fld [heightMinusRadius] ; st: [h - r]
         fld [widthMinusRadius] ; st: [w - r][h - r]
         fld [circleRadius] ; st: [r][w - r][h - r]
-        invoke wallRebound, addr [ball1]
-        invoke wallRebound, addr [ball2]
+        invoke wallCollision, addr [ball1]
+        invoke wallCollision, addr [ball2]
         fstp st ; st: [w - r][h - r]
         fstp st ; st: [h - r]
         fstp st ; st: []
@@ -341,8 +368,14 @@ main proc
         invoke printBinary, [gameStatus]
         printNewline
         
-        ; invoke printUint16, [debugCounter]
+        invoke printInt16, [ball1.score]
+        printNewline
+        invoke printInt16, [ball2.score]
+        printNewline
+        
+        ; invoke printUint16, [debugVariable]
         ; printNewline
+        
         
         ; draw to backbuffer
         mov ax, backBuffer
@@ -360,6 +393,45 @@ main proc
                 invoke drawLine, ball1.integerX, ball1.integerY, cx, dx
             .endif
         .endif
+        ; draw wall
+        lea si, wallColor
+        xor di, di
+        .repeat
+            mov al, [si]
+            mov cx, 40
+            rep stosb
+            inc si
+        .until si == offset [wallColor + 8]
+        dec di
+        .repeat
+            mov al, [si]
+            mov cx, 40
+            @@:
+                stosb
+                add di, 320 - 1 ; width - stosb increment
+                loop @b
+            inc si
+        .until si == offset [wallColor + 8 + 5]
+        sub di, 320
+        std
+        .repeat
+            mov al, [si]
+            mov cx, 40
+            rep stosb
+            inc si
+        .until si == offset [wallColor + 8 + 5 + 8]
+        inc di
+        .repeat
+            mov al, [si]
+            mov cx, 40
+            @@:
+                stosb
+                add di, -(320 - 1) ; width - stosb increment
+                loop @b
+            inc si
+        .until si == offset [wallColor + 8 + 5 + 8 + 5]
+        cld
+        
         
         ; VSync
         mov dx, 03dah
@@ -406,30 +478,31 @@ main proc
         .exit
 main endp
 
-step proc, pBall: ptr circle ; st: [dt]
-    mov si, word ptr [pBall]
+step proc, pBall: near ptr circle ; st: [dt]
+    mov si, [pBall]
+    assume si: near ptr circle
     
     ; newX = x + vx * dt
-    fld [(circle ptr [si]).vx] ; st: [vx][dt]
+    fld [si].vx ; st: [vx][dt]
     fmul st, st(1) ; st: [vx * dt][dt]
-    fadd [(circle ptr [si]).x] ; st: [x + vx * dt][dt] = [newX][dt]
-    fist [(circle ptr [si]).integerX]
-    fstp [(circle ptr [si]).x] ; st: [dt]
+    fadd [si].x ; st: [x + vx * dt][dt] = [newX][dt]
+    fist [si].integerX
+    fstp [si].x ; st: [dt]
     ; newY = y + vy * dt
-    fld [(circle ptr [si]).vy] ; st: [vy][dt]
+    fld [si].vy ; st: [vy][dt]
     fmul st, st(1) ; st: [vy * dt][dt]
-    fadd [(circle ptr [si]).y] ; st: [y + vy * dt][dt] = [newY1][dt]
-    fist [(circle ptr [si]).integerY]
-    fstp [(circle ptr [si]).y] ; st: [dt]
+    fadd [si].y ; st: [y + vy * dt][dt] = [newY1][dt]
+    fist [si].integerY
+    fstp [si].y ; st: [dt]
     
     ; friction:
     ;   f = m * a = k_f * n * (-v / ||v||), m = mass, a = accelleration, k_f = friction coefficient, n = normal force
     ;   a = -k_f * n / m * (-v / ||v||) = -k * v / ||v||
     ;   v = v0 + a0 * dt = v0 - k * v0 / ||v0|| * dt 
     ;     = v0 * (1 - k * dt / ||v0||), k > 0, 1 - k * dt / ||v0|| >= 0
-    fld [(circle ptr [si]).vx] ; st: [vx][dt]
+    fld [si].vx ; st: [vx][dt]
     fmul st, st ; st: [vx^2][dt]
-    fld [(circle ptr [si]).vy] ; st: [vy][vx^2][dt]
+    fld [si].vy ; st: [vy][vx^2][dt]
     fmul st, st ; st: [vy^2][vx^2][dt]
     faddp st(1), st ; st: [vx^2 + vy^2][dt]
     fsqrt ; st: [||v||][dt]
@@ -446,66 +519,133 @@ step proc, pBall: ptr circle ; st: [dt]
         fstp st ; st: [dt]
         fldz ; st: [0][dt]
     @@:
-    fld [(circle ptr [si]).vx] ; st: [vx][1 - k * dt / ||v||][dt]
+    fld [si].vx ; st: [vx][1 - k * dt / ||v||][dt]
     fmul st, st(1) ; st: [vx * (1 - k * dt / ||v||)][1 - k * dt / ||v||][dt]
-    fstp [(circle ptr [si]).vx] ; st: [1 - k * dt / ||v||][dt]
-    fmul [(circle ptr [si]).vy] ; st: [vy * (1 - k * dt / ||v||)][dt]
-    fstp [(circle ptr [si]).vy] ; st: [dt]
+    fstp [si].vx ; st: [1 - k * dt / ||v||][dt]
+    fmul [si].vy ; st: [vy * (1 - k * dt / ||v||)][dt]
+    fstp [si].vy ; st: [dt]
     
+    
+    assume si: nothing
     ret
 step endp
-wallRebound proc, pBall: ptr circle ; st: [radius][width- radius][height - radius]
-    mov si, word ptr [pBall]
+wallCollision proc, pBall: near ptr circle ; st: [radius][width- radius][height - radius]
+    ; 40 pixels per section
+    ; 
+    ;     0  1  2  3  4  5  6  7
+    ;    ┌───────────────────────┐
+    ; 25 │                       │ 8
+    ; 24 │                       │ 9
+    ; 23 │                       │ 10
+    ; 22 │                       │ 11
+    ; 21 │                       │ 12
+    ;    └───────────────────────┘
+    ;     20 19 18 17 16 15 14 13
+    
+    mov si, [pBall]
+    assume si: near ptr circle
     ; r = radius, w = width, h = height
     
     ; left edge
-    fld [(circle ptr [si]).x] ; st: [x][r][w - r][h - r][...]
+    fld [si].x ; st: [x][r][w - r][h - r][...]
     fcomi_ 1 ; cmp x, r
     ja @f ; x > r
-    ; bt word ptr [(circle ptr [si]).vx + 7], 7 ; sign bit of float
-    bt (circle ptr [si]).vx, 31 ; sign bit of float
+    bt [si].vx, 31 ; sign bit of float
     jnc @f ; vx > 0
         ; x <= r && vx < 0
-        ; and byte ptr [(circle ptr [si]).vx + 7], 01111111b ; neg -> pos
-        btr (circle ptr [si]).vx, 31 ; neg -> pos
+        btr [si].vx, 31 ; neg -> pos
+        
+        ; wall effect index = 2 * (wall section)
+        ;   = 2 * (25 - y / 40)
+        mov ax, [si].integerY
+        mov bl, 40
+        div bl ; y / 40 = al ... ah
+        xor ah, ah
+        neg ax
+        add ax, 25
+        shl ax, 1
+        mov bx, ax
+        cmp [wallEffect + bx], noEffect
+        je topBottomCollision
+        invoke [wallEffect + bx]
+        jmp topBottomCollision
     @@:
     
     ; right edge
-    fcomip_ 2 ; cmp x, w - r ; st: [r][w - r][h - r][...]
+    fcomi_ 2 ; cmp x, w - r
     jb @f ; x < w - r
-    ; bt word ptr [(circle ptr [si]).vx + 7], 7 ; sign bit of float
-    bt (circle ptr [si]).vx, 31 ; sign bit of float
+    bt [si].vx, 31 ; sign bit of float
     jc @f ; vx < 0
         ; x >= w - r && vx > 0
-        ; or byte ptr [(circle ptr [si]).vx + 7], 10000000b ; pos -> neg
-        bts (circle ptr [si]).vx, 31 ; pos -> neg
+        bts [si].vx, 31 ; pos -> neg
+        
+        ; wall effect index = 2 * (wall section)
+        ;   = 2 * (8 + y / 40)
+        mov ax, [si].integerY
+        mov bl, 40
+        div bl ; y / 40 = al ... ah
+        xor ah, ah
+        add ax, 8
+        shl ax, 1
+        mov bx, ax
+        cmp [wallEffect + bx], noEffect
+        je topBottomCollision
+        invoke [wallEffect + bx]
     @@:
     
+    topBottomCollision:
     ; top edge
-    fld [(circle ptr [si]).y] ; st: [y][r][w - r][h - r][...]
-    fcomi_ 1 ; cmp y, r
+    fld [si].y ; st: [y][x][r][w - r][h - r]
+    fcomi_ 2 ; cmp y, r
     ja @f ; y > r
-    ; bt word ptr [(circle ptr [si]).vy + 7], 7 ; sign bit of float
-    bt (circle ptr [si]).vy, 31 ; sign bit of float
+    bt [si].vy, 31 ; sign bit of float
     jnc @f ; vy > 0
         ; y <= r && vy < 0
-        ; and byte ptr [(circle ptr [si]).vy + 7], 01111111b ; neg -> pos
-        btr (circle ptr [si]).vy, 31 ; neg -> pos
+        btr [si].vy, 31 ; neg -> pos
+        
+        ; wall effect index = 2 * (wall section)
+        ;   = 2 * (x / 40)
+        mov ax, [si].integerX
+        mov bl, 40
+        div bl ; y / 40 = al ... ah
+        xor ah, ah
+        shl ax, 1
+        mov bx, ax
+        cmp [wallEffect + bx], noEffect
+        je return
+        invoke [wallEffect + bx]
+        jmp return
     @@:
     
     ; bottom edge
-    fcomip_ 3 ; cmp y, h - r ; st: [r][w - r][h - r][...]
+    fcomi_ 4 ; cmp y, h - r
     jb @f ; y < h - r
-    ; bt word ptr [(circle ptr [si]).vy + 7], 7 ; sign bit of float
-    bt (circle ptr [si]).vy, 31 ; sign bit of float
+    bt [si].vy, 31 ; sign bit of float
     jc @f ; vy < 0
         ; y >= h - r && vy > 0
-        ; or byte ptr [(circle ptr [si]).vy + 7], 10000000b ; pos -> neg
-        bts (circle ptr [si]).vy, 31 ; pos -> neg
+        bts [si].vy, 31 ; pos -> neg
+        
+        ; wall effect index = 2 * (wall section)
+        ;   = 2 * (20 - x / 40)
+        mov ax, [si].integerX
+        mov bl, 40
+        div bl ; y / 40 = al ... ah
+        xor ah, ah
+        neg ax
+        add ax, 20
+        shl ax, 1
+        mov bx, ax
+        cmp [wallEffect + bx], noEffect
+        je return
+        invoke [wallEffect + bx]
     @@:
     
-    ret
-wallRebound endp
+    return:
+        fstp st ; st: [x][r][w - r][h - r][...]
+        fstp st ; st: [r][w - r][h - r][...]
+        assume si: nothing
+        ret
+wallCollision endp
 drawCircle proc, centerX: word, centerY: word
     ; di = (centerY - circleRadius) * 320 + (centerX - circleWidth[0] >> 1)
     mov ax, [centerY]
@@ -599,6 +739,20 @@ drawLine proc, x0: word, y0: word, x1: word, y1: word
     
     ret
 drawLine endp
+
+; wall effect function
+noEffect proc
+    nop
+noEffect endp
+increaseScore proc
+    inc (circle ptr [si]).score
+    ret
+increaseScore endp
+decreaseScore proc
+    dec (circle ptr [si]).score
+    ret
+decreaseScore endp
+
 printUint8 proc uses ax dx ds si, number: byte
     local outputString[4]: byte
     
