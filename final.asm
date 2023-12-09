@@ -7,17 +7,23 @@
 ; https://masm32.com/board/index.php?topic=7837.0
 
 printNewline macro
-    push ax
-    push dx
-    
     mov ah, 02h
     mov dl, 13
     int 21h
     mov dl, 10
     int 21h
-    
-    pop dx
-    pop ax
+endm
+moveTextCursor macro x, y
+    mov ah, 02h
+    xor bh, bh
+    mov dh, y
+    mov dl, x
+    int 10h
+endm
+printString macro string
+    mov ah, 09h
+    lea dx, string
+    int 21h
 endm
 matrix_x_vector macro m11, m21, m12, m22, v1, v2 ; index of fpu stack, result stored in v1, v2
     ; /m11 m12\ /v1\ = /m11 * v1 + m12 * v2\
@@ -39,6 +45,13 @@ endm
 fcomip_ macro i ; see fcomip in https://www.website.masmforum.com/tutorials/fptute/fpuchap7.htm
     db 0dfh, 0f0h + i
 endm
+nextRandomNumber macro
+    ; https://en.wikipedia.org/wiki/Linear_congruential_generator#Parameters_in_common_use
+    mov eax, 1664525
+    mul [randomNumber]
+    add eax, 1013904223
+    mov [randomNumber], eax
+endm
 
 ; https://learn.microsoft.com/en-us/cpp/assembler/masm/dot-model?view=msvc-170
 ; compact: multiple data segment
@@ -52,8 +65,9 @@ screenWidth equ 320.0
 screenHeight equ 200.0
 
 .data
+; procedure prototype
 step proto, pBall: near ptr circle
-drawCircle proto, centerX: word, centerY: word
+drawCircle proto, centerX: word, centerY: word, color: byte
 drawLine proto, x0: word, y0: word, x1: word, y1: word
 printUint8 proto, number: byte
 printUint16 proto, number: word
@@ -64,12 +78,18 @@ printInt32 proto, number: dword
 printBinary proto, number: byte
 printHex32 proto, number: dword
 
+; string
+winMessage db " win !$"
+playAgainMessage db "press Enter to play again.$"
+exitMessage db "press ESC to exit.$"
+
 circlePixelRadius equ 16
 circleRadius real4 16.0
 circleWidth \
 dw 9, 13, 17, 21, 23, 25, 27, 27, 29, 29, 31, 31, 33, 33, 33, 33, 33, 33, 33, 33, 33, 31, 31, 29, 29
 dw 27, 27, 25, 23, 21, 17, 13, 9
 circle struct
+    id db 5 dup(?)
     x real4 ?
     y real4 ?
     vx real4 ?
@@ -79,8 +99,8 @@ circle struct
     score dw 0
 circle ends
 wallCollision proto, pBall: near ptr circle
-ball1 circle <120.0, 100.0, 0.0, 0.0>
-ball2 circle <200.0, 100.0, 0.0, 0.0>
+redBall circle <"red$", 120.0, 100.0, 0.0, 0.0, 120, 100, 0>
+blueBall circle <"blue$", 200.0, 100.0, 0.0, 0.0, 200, 100, 0>
 
 clockPeriod real4 ?
 lastTimerCount dd ?
@@ -91,7 +111,7 @@ heightMinusRadius real4 screenHeight
 frictionCoefficient real4 50.0
 
 mouseButtonStatus db ?
-whoseTurn dw offset ball1
+whoseTurn dw offset redBall
 
 gameStatus db 00000000b
 ; [0] 1: round start, 0: round end
@@ -99,12 +119,17 @@ gameStatus db 00000000b
 
 wallEffectProto typedef proto
 wallEffectPtr typedef near ptr wallEffectProto
-wallEffect wallEffectPtr 8 dup(noEffect), 13 dup(increaseScore), 5 dup(decreaseScore)
+wallEffect wallEffectPtr 26 dup(?)
 wallColor db 26 dup(?)
 
+dashedlineColor db 08h, 08h, 08h, 08h, 08h, 00h, 00h, 00h
+dashedlineFlow dw 0
+
+randomNumber dd ?
+
 debugVariable dw 0
-dashedlineColor db 0fh, 0fh, 0fh, 0fh, 0fh, 00h, 00h, 00h
-.fardata backBuffer
+
+.fardata? backBuffer
 db 320 * 200 dup(?) ; video backbuffer
 
 .stack 1000h
@@ -113,41 +138,74 @@ main proc
     .startup
     finit ; init fpu
     
-    ; load or calculate fpu related number
+    ; initialize data
     fld [circleRadius] ; st: [radius]
     fld [widthMinusRadius] ; st: [width][radius]
     fsub st, st(1) ; st: [width - radius][radius]
     fstp [widthMinusRadius] ; st: [radius]
     fsubr [heightMinusRadius] ; st: [height - radius]
     fstp [heightMinusRadius] ; st: []
-    fld [ball1.x] ; st: [x]
-    fistp [ball1.integerX] ; st: []
-    fld [ball1.y] ; st: [x]
-    fistp [ball1.integerY] ; st: []
-    fld [ball2.x] ; st: [x]
-    fistp [ball2.integerX] ; st: []
-    fld [ball2.y] ; st: [x]
-    fistp [ball2.integerY] ; st: []
+    fld [redBall.x] ; st: [x]
+    fistp [redBall.integerX] ; st: []
+    fld [redBall.y] ; st: [x]
+    fistp [redBall.integerY] ; st: []
+    fld [blueBall.x] ; st: [x]
+    fistp [blueBall.integerX] ; st: []
+    fld [blueBall.y] ; st: [x]
+    fistp [blueBall.integerY] ; st: []
+    rdtsc
+    mov [randomNumber], eax
     
-    ; decide wall color
-    lea si, [wallEffect]
-    lea di, [wallColor]
+    ; generate random wall
+    mov [wallEffect + 0 * 2], increaseScore ; at least one increase score
+    mov [wallColor + 0 * 1], 2fh ; green
+    mov [wallEffect + 1 * 2], decreaseScore ; at least one decrease score
+    mov [wallColor + 1 * 1], 28h ; red
+    lea si, [wallEffect + 2 * 2]
+    lea di, [wallColor + 2 * 1]
     assume di: near ptr byte
-    .while si != offset [wallEffect + sizeof wallEffect]
-        .if [si] == noEffect
+    .while si != offset [wallEffect + 26 * 2]
+        ;      noEffect: 80% = ~ 52428
+        ; increaseScore: 10% = ~ 58981
+        ; decreaseScore: 10% = ~ 65535
+        nextRandomNumber
+        .if word ptr [randomNumber] <= 52428
+            mov [si], noEffect
             mov [di], 0fh ; white
-        .elseif [si] == increaseScore
+        .elseif word ptr [randomNumber] <= 58981
+            mov [si], increaseScore
             mov [di], 2fh ; green
-        .elseif [si] == decreaseScore
-            mov [di], 28h ; red
         .else
-            mov [di], 00h ; black
+            mov [si], decreaseScore
+            mov [di], 28h ; red
         .endif
         
         add si, 2
         inc di
     .endw
     assume di: nothing
+    ; shuffle wall
+    ; https://en.wikipedia.org/wiki/Fisher%E2%80%93Yates_shuffle#The_modern_algorithm
+    mov bl, lengthof wallEffect ; 26, divisor
+    mov ecx, lengthof wallEffect - 1 ; 25
+    @@:
+        nextRandomNumber
+        xor ah, ah ; avoid division overflow
+        div bl ; random / bl = al ... ah, 0 <= ah <= cx
+        movzx edi, ah
+        ; exchange wallEffect[ecx], wallEffect[edi]
+        mov ax, [wallEffect + ecx * 2]
+        xchg ax, [wallEffect + edi * 2]
+        mov [wallEffect + ecx * 2], ax
+        ; exchange wallColor[ecx], wallColor[edi]
+        mov al, [wallColor + ecx * 1]
+        xchg al, [wallColor + edi * 1]
+        mov [wallColor + ecx * 1], al
+        
+        dec bl
+        loop @b
+    
+    
     
     ; video mode, 320 * 200, 256 colors
     mov ax, 13h
@@ -227,7 +285,7 @@ main proc
     rdtsc
     mov [lastTimerCount], eax
     
-    .repeat
+    refresh:
         ; clear backbuffer
         mov ax, backBuffer
         mov es, ax
@@ -239,8 +297,8 @@ main proc
         ; move text cursor to top left
         mov ah, 02h
         xor bh, bh
-        xor dh, dh
-        xor dl, dl
+        mov dh, 0
+        mov dl, 0
         int 10h
         
         ; get dt
@@ -262,8 +320,8 @@ main proc
         
         ; step
         fld [deltaT] ; st: [dt]
-        invoke step, addr ball1
-        invoke step, addr ball2
+        invoke step, addr redBall
+        invoke step, addr blueBall
         fstp st ; st: []
         
         mov ax, 03h
@@ -277,9 +335,9 @@ main proc
         test [gameStatus], 00000001b
         jnz @f ; round not over yet
             .if [gameStatus] & 00000010b
-                lea si, [ball2]
+                lea si, [blueBall]
             .else
-                lea si, [ball1]
+                lea si, [redBall]
             .endif
             or [gameStatus], 00000001b ; new round start
             mov word ptr [fpuTemp], cx
@@ -299,8 +357,8 @@ main proc
         fld [heightMinusRadius] ; st: [h - r]
         fld [widthMinusRadius] ; st: [w - r][h - r]
         fld [circleRadius] ; st: [r][w - r][h - r]
-        invoke wallCollision, addr [ball1]
-        invoke wallCollision, addr [ball2]
+        invoke wallCollision, addr [redBall]
+        invoke wallCollision, addr [blueBall]
         fstp st ; st: [w - r][h - r]
         fstp st ; st: [h - r]
         fstp st ; st: []
@@ -313,10 +371,10 @@ main proc
         ; \ny ty/ = \ny  nx/ , orthonormal basis
         ; /nx -ny\-1  /nx -ny\T  / nx ny\ , XY coordinate => NT coordinate
         ; \ny  nx/  = \ny  nx/ = \-ny nx/
-        fld [ball1.y] ; st: [y1]
-        fsub [ball2.y] ; st: [y1 - y2 = dy]
-        fld [ball1.x] ; st: [x1][dy]
-        fsub [ball2.x] ; st: [x1 - x2 = dx][dy]
+        fld [redBall.y] ; st: [y1]
+        fsub [blueBall.y] ; st: [y1 - y2 = dy]
+        fld [redBall.x] ; st: [x1][dy]
+        fsub [blueBall.x] ; st: [x1 - x2 = dx][dy]
         fld st(1) ; st: [dy][dx][dy]
         fmul st, st ; st: [dy^2][dx][dy]
         fld st(1) ; st: [dx][dy^2][dx][dy]
@@ -332,34 +390,34 @@ main proc
             fdivp st(1), st ; st: [dx / |n| = nx][ny]
             fld st(1) ; st: [ny][nx][ny]
             fchs ; st: [-ny][nx][ny]
-            fld [ball1.vy] ; st: [v1y][-ny][nx][ny]
-            fld [ball1.vx] ; st: [v1x][v1y][-ny][nx][ny]
+            fld [redBall.vy] ; st: [v1y][-ny][nx][ny]
+            fld [redBall.vx] ; st: [v1x][v1y][-ny][nx][ny]
             ; / nx ny\ /v1x\ = /v1n\
             ; \-ny nx/ \v1y/   \v1t/
             matrix_x_vector 3, 2, 4, 3, 0, 1 ; st: [v1n][v1t][-ny][nx][ny]
             fstp [fpuTemp] ; st: [v1t][-ny][nx][ny]
-            fld [ball2.vy] ; st: [v2y][v1t][-ny][nx][ny]
-            fld [ball2.vx] ; st: [v2x][v2y][v1t][-ny][nx][ny]
+            fld [blueBall.vy] ; st: [v2y][v1t][-ny][nx][ny]
+            fld [blueBall.vx] ; st: [v2x][v2y][v1t][-ny][nx][ny]
             ; / nx ny\ /v2x\ = /v2n\
             ; \-ny nx/ \v2y/   \v2t/
             matrix_x_vector 4, 3, 5, 4, 0, 1 ; st: [v2n][v2t][v1t][-ny][nx][ny]
             ; /nx -ny\ /v2n\ = v1': v1 after collision
             ; \ny  nx/ \v1t/
             matrix_x_vector 4, 5, 3, 4, 0, 2 ; st: [v1x'][v2t][v1y'][-ny][nx][ny]
-            fstp [ball1.vx] ; st: [v2t][v1y'][-ny][nx][ny]
+            fstp [redBall.vx] ; st: [v2t][v1y'][-ny][nx][ny]
             fld [fpuTemp] ; st: [v1n][v2t][v1y'][-ny][nx][ny]
             ; /nx -ny\ /v1n\ = v2': v2 after collision
             ; \ny  nx/ \v2t/
             matrix_x_vector 4, 5, 3, 4, 0, 1 ; st: [v2x'][v2y'][v1y'][-ny][nx][ny]
-            fstp [ball2.vx] ; st: [v2y'][v1y'][-ny][nx][ny]
-            fstp [ball2.vy] ; st: [v1y'][-ny][nx][ny]
-            fstp [ball1.vy] ; st: [-ny][nx][ny]
+            fstp [blueBall.vx] ; st: [v2y'][v1y'][-ny][nx][ny]
+            fstp [blueBall.vy] ; st: [v1y'][-ny][nx][ny]
+            fstp [redBall.vy] ; st: [-ny][nx][ny]
         @@:
         finit ; st: []
         
         ; round not over yet && all velocity == 0: end of round
         mov eax, 7fffffffh ; 01111...111b
-        .if [gameStatus] & 00000001b && !([ball1.vx] & eax) && !([ball1.vy] & eax) && !([ball2.vx] & eax) && !([ball1.vy] & eax)
+        .if [gameStatus] & 00000001b && !([redBall.vx] & eax) && !([redBall.vy] & eax) && !([blueBall.vx] & eax) && !([redBall.vy] & eax)
             xor [gameStatus], 00000011b ; end round, change player
             ; btr word ptr [gameStatus], 0
             ; btc word ptr [gameStatus], 1 ; the other player's turn
@@ -368,9 +426,9 @@ main proc
         invoke printBinary, [gameStatus]
         printNewline
         
-        invoke printInt16, [ball1.score]
+        invoke printInt16, [redBall.score]
         printNewline
-        invoke printInt16, [ball2.score]
+        invoke printInt16, [blueBall.score]
         printNewline
         
         ; invoke printUint16, [debugVariable]
@@ -380,20 +438,22 @@ main proc
         ; draw to backbuffer
         mov ax, backBuffer
         mov es, ax
-        invoke drawCircle, [ball1.integerX], [ball1.integerY]
-        invoke drawCircle, [ball2.integerX], [ball2.integerY]
         ; draw line
         mov ax, 03h
         int 33h
         shr cx, 1
-        mov si, 0h
+        mov si, dashedlineFlow
+        dec dashedlineFlow
+        and dashedlineFlow, 0111b
         .if !([gameStatus] & 00000001b) ; if round not start yet
             .if [gameStatus] & 00000010b ; if player2's turn
-                invoke drawLine, ball2.integerX, ball2.integerY, cx, dx
+                invoke drawLine, blueBall.integerX, blueBall.integerY, cx, dx
             .else
-                invoke drawLine, ball1.integerX, ball1.integerY, cx, dx
+                invoke drawLine, redBall.integerX, redBall.integerY, cx, dx
             .endif
         .endif
+        invoke drawCircle, [redBall.integerX], [redBall.integerY], 28h
+        invoke drawCircle, [blueBall.integerX], [blueBall.integerY], 20h
         ; draw wall
         lea si, wallColor
         xor di, di
@@ -457,11 +517,13 @@ main proc
         rep movsd
         pop ds
         
-        ; delay
-        ; mov ah, 86h
-        ; mov cx, 0
-        ; mov dx, 40000
-        ; int 15h
+        .if sword ptr [redBall.score] >= 3
+            lea si, [redBall]
+            jmp gameover
+        .elseif sword ptr [blueBall.score] >= 3
+            lea si, [blueBall]
+            jmp gameover
+        .endif
         
         ; mov ah, 00h
         ; int 16h
@@ -471,7 +533,27 @@ main proc
         mov ah, 06h
         mov dl, 0ffh
         int 21h
-    .until !zero?
+        jz refresh
+        cmp al, 1bh
+        jne refresh
+        je exit
+    
+    gameover:
+        ; print win message
+        moveTextCursor 15, 12
+        printString (circle ptr [si]).id
+        printString winMessage
+        ; print message
+        moveTextCursor (40 - (lengthof playAgainMessage - 1)) / 2, 16
+        printString playAgainMessage
+        moveTextCursor (40 - (lengthof exitMessage - 1)) / 2, 18
+        printString exitMessage
+        
+        
+        .repeat
+            mov ah, 00h
+            int 16h
+        .until al == 1bh
     
     exit:
         mov ax, 03h
@@ -647,7 +729,7 @@ wallCollision proc, pBall: near ptr circle ; st: [radius][width- radius][height 
         assume si: nothing
         ret
 wallCollision endp
-drawCircle proc, centerX: word, centerY: word
+drawCircle proc, centerX: word, centerY: word, color: byte
     ; di = (centerY - circleRadius) * 320 + (centerX - circleWidth[0] >> 1)
     mov ax, [centerY]
     sub ax, circlePixelRadius
@@ -664,7 +746,7 @@ drawCircle proc, centerX: word, centerY: word
     mov bx, si
     add bx, (circlePixelRadius * 2 + 1) * 2 ; 2bytes * (2r + 1)
     
-    mov al, 00fh ; color white
+    mov al, color ; color white
     .while si != bx
         mov cx, [si]
         rep stosb
@@ -1043,7 +1125,7 @@ printHex32 proc uses ax cx dx, number: dword
     ret
 printHex32 endp
 
-.fardata coverImage
+.fardata? coverImage
 imageWidth equ 320
 imageHeight equ 200
 imageLeft equ (320 - imageWidth) / 2
