@@ -34,8 +34,11 @@ input.addEventListener('change', e => {
       for (let row = 0; row < imageData.height; row++) {
         for (let col = 0; col < imageData.width; col++) {
           const index = (row * imageData.width + col) * 4;
-          const byte = data[index] + data[index + 1] + data[index + 2] + data[index + 3] < 128 * 4 ? '15' : '0';
-          dbArray.push(byte);
+          dbArray.push(
+            Math.floor(
+              (data[index] + data[index + 1] + data[index + 2]) / (3 * 16) + 16
+            )
+          )
         }
       }
       let text = `width: ${imageData.width}, height: ${imageData.height}<br>`;
