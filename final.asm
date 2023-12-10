@@ -626,8 +626,13 @@ gameStart proc
         mov dl, 0ffh
         int 21h
         .continue .if zero?
-        cmp al, 1bh ; esc
-        je return
+        .if al == 1bh ; esc
+            jmp return
+        .elseif al == 'h' || al == 'H'
+            call helpPage
+            rdtsc
+            mov [lastTimerCount], eax
+        .endif
     .endw
     
     ; print win message
