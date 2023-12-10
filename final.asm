@@ -599,16 +599,16 @@ gameStart proc
         rep movsd
         pop ds
         
-        .if sbyte ptr [redBall.score] >= 7
+        .if sbyte ptr [redBall.score] >= 10
             lea si, [redBall]
             .break
-        .elseif sbyte ptr [blueBall.score] >= 7
+        .elseif sbyte ptr [blueBall.score] >= 10
             lea si, [blueBall]
             .break
-        .elseif sbyte ptr [redBall.score] <= -5
+        .elseif sbyte ptr [redBall.score] <= -10
             lea si, [blueBall]
             .break
-        .elseif sbyte ptr [blueBall.score] <= -5
+        .elseif sbyte ptr [blueBall.score] <= -10
             lea si, [redball]
             .break
         .endif
