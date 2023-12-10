@@ -93,6 +93,7 @@ step proto, pBall: near ptr circle
 drawRectangle proto, left: word, top: word, squareWidth: word, height: word, color: byte
 drawCircle proto, centerX: word, centerY: word, color: byte
 drawLine proto, x0: word, y0: word, x1: word, y1: word
+printScore proto, score: byte, color: byte, x: byte, y: byte
 printUint8 proto, number: byte
 printUint16 proto, number: word
 printUint32 proto, number: dword
@@ -109,10 +110,10 @@ gameIntroduction \
     db "This is a two-player battle game where", 13, 10, " "
     db "red and blue take turns. Click the", 13, 10, " "
     db "left mouse button to shoot the ball", 13, 10 ," "
-    db "towards the mouse pointer; the dashed", 13, 10 ," "
-    db "line length indicates the shooting", 13, 10 ," "
-    db "power. The first to reach 10 points", 13, 10 ," "
-    db "wins. Hitting walls of different", 13, 10 ," "
+    db "towards the cursor; the dashed line", 13, 10 ," "
+    db "length indicates the shots power.", 13, 10 ," "
+    db "First to reach 10 points wins, but -10", 13, 10 ," "
+    db "means loss. Hitting walls of different", 13, 10 ," "
     db "colors triggers various effects,", 13, 10 ," "
     db "including:$"
 normalWallMessage db "no effect$"
@@ -138,7 +139,7 @@ circle struct
     vy real4 ?
     integerX dw ?
     integerY dw ?
-    score dw ?
+    score db ?
 circle ends
 wallCollision proto, pBall: near ptr circle
 redBall circle <"Red$", , , , , , , >
@@ -402,13 +403,6 @@ gameStart proc
         fmul [clockPeriod] ; st: [dt]
         fstp [deltaT] ; st: []
         
-        mov dword ptr [fpuTemp], 1000000
-        fild dword ptr [fpuTemp] ; st: [1000000]
-        fmul [deltaT] ; st: [1000000 * dt]
-        fistp dword ptr [fpuTemp] ; st: []
-        invoke printUint32, dword ptr [fpuTemp]
-        printNewline
-        
         ; calculate next position and velocity
         fld [deltaT] ; st: [dt]
         invoke step, addr redBall
@@ -520,17 +514,8 @@ gameStart proc
             .endif
         .endif
         
-        ; invoke printBinary, [gameStatus]
-        ; printNewline
-        
-        invoke printInt16, [redBall.score]
-        printNewline
-        invoke printInt16, [blueBall.score]
-        printNewline
-        
-        ; invoke printUint16, [debugVariable]
-        ; printNewline
-        
+        invoke printScore, [redball.score], 28h, 19, 1
+        invoke printScore, [blueBall.score], 37h, 19, 23
         
         ; draw to backbuffer
         mov ax, backBuffer
@@ -614,11 +599,17 @@ gameStart proc
         rep movsd
         pop ds
         
-        .if sword ptr [redBall.score] >= 7
+        .if sbyte ptr [redBall.score] >= 7
             lea si, [redBall]
             .break
-        .elseif sword ptr [blueBall.score] >= 7
+        .elseif sbyte ptr [blueBall.score] >= 7
             lea si, [blueBall]
+            .break
+        .elseif sbyte ptr [redBall.score] <= -5
+            lea si, [blueBall]
+            .break
+        .elseif sbyte ptr [blueBall.score] <= -5
+            lea si, [redball]
             .break
         .endif
         
@@ -1026,6 +1017,42 @@ extraTurn proc
     .endif
     ret
 extraTurn endp
+
+printScore proc, score: byte, color: byte, x: byte, y: byte
+    moveTextCursor x, y
+    mov ah, 0eh
+    xor bh, bh
+    mov bl, color
+    .if sbyte ptr [score] < 0
+        neg [score]
+        mov al, '-'
+        int 10h
+    .elseif sbyte ptr [score] == 0
+        mov al, '0'
+        int 10h
+        ret
+    .endif
+    
+    mov al, [score]
+    xor ecx, ecx
+    mov dl, 10
+    .repeat
+        xor ah, ah
+        div dl
+        or ah, 30h
+        push ax
+        inc ecx
+    .until al == 0
+    
+    mov ah, 0eh
+    @@:
+        pop dx
+        mov al, dh
+        int 10h
+        loop @b
+    
+    ret
+printScore endp
 
 printUint8 proc uses ax dx ds si, number: byte
     local outputString[4]: byte
