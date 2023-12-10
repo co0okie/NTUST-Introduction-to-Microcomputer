@@ -5,6 +5,7 @@
 ; https://stackoverflow.com/questions/13450894/struct-or-class-in-assembly
 ; https://en.wikipedia.org/wiki/Linear_congruential_generator#Parameters_in_common_use
 ; https://masm32.com/board/index.php?topic=7837.0
+; https://stackoverflow.com/questions/67066755/assembly-x86-16-bit-vsync-screen-tearing
 
 printNewline macro
     mov ah, 02h
@@ -577,15 +578,16 @@ gameStart proc
         
         
         ; VSync
+        ; https://stackoverflow.com/questions/67066755/assembly-x86-16-bit-vsync-screen-tearing
         mov dx, 03dah
         @@:
             in al, dx
-            bt ax, 3
-            jc @b
+            test al, 1000b
+            jnz @b
         @@:
             in al, dx
-            bt ax, 3
-            jnc @b
+            test al, 1000b
+            jz @b
         
         ; backbuffer -> video memory
         push ds
@@ -618,7 +620,7 @@ gameStart proc
         int 21h
         .continue .if zero?
         .if al == 1bh ; esc
-            jmp return
+            ret
         .elseif al == 'h' || al == 'H'
             call helpPage
             rdtsc
@@ -644,8 +646,7 @@ gameStart proc
         .endif
     .until al == 0dh ; enter
         
-    return:
-        ret
+    ret
 gameStart endp
 helpPage proc
     ; clear screen
@@ -758,13 +759,19 @@ wallCollision proc, pBall: near ptr circle ; st: [radius][width- radius][height 
     ; r = radius, w = width, h = height
     
     ; left edge
-    fld [si].x ; st: [x][r][w - r][h - r][...]
+    fld [si].x ; st: [x][r][w - r][h - r]
     fcomi_ 1 ; cmp x, r
     ja @f ; x > r
     bt [si].vx, 31 ; sign bit of float
     jnc @f ; vx > 0
         ; x <= r && vx < 0
         btr [si].vx, 31 ; neg -> pos
+        ; x = x + 2(r - x) = 2r - x
+        fld st(1) ; st: [r][x][r][w - r][h - r]
+        fadd st, st ; st: [2r][x][r][w - r][h - r]
+        fsub st, st(1) ; st: [2r - x][x][r][w - r][h - r]
+        fst [si].x
+        fistp [si].integerX ; st: [x][r][w - r][h - r]
         
         ; wall effect index = 2 * (wall section)
         ;   = 2 * (25 - y / 40)
@@ -789,6 +796,12 @@ wallCollision proc, pBall: near ptr circle ; st: [radius][width- radius][height 
     jc @f ; vx < 0
         ; x >= w - r && vx > 0
         bts [si].vx, 31 ; pos -> neg
+        ; x = x - 2(x - (w - r)) = 2(w - r) - x
+        fld st(2) ; st: [w - r][x][r][w - r][h - r]
+        fadd st, st ; st: [2(w - r)][x][r][w - r][h - r]
+        fsub st, st(1) ; st: [2(w - r) - x][x][r][w - r][h - r]
+        fst [si].x
+        fistp [si].integerX ; st: [x][r][w - r][h - r]
         
         ; wall effect index = 2 * (wall section)
         ;   = 2 * (8 + y / 40)
@@ -813,6 +826,12 @@ wallCollision proc, pBall: near ptr circle ; st: [radius][width- radius][height 
     jnc @f ; vy > 0
         ; y <= r && vy < 0
         btr [si].vy, 31 ; neg -> pos
+        ; y = y + 2(r - y) = 2r - y
+        fld st(2) ; st: [r][y][x][r][w - r][h - r]
+        fadd st, st ; st: [2r][y][x][r][w - r][h - r]
+        fsub st, st(1) ; st: [2r - y][y][x][r][w - r][h - r]
+        fst [si].y
+        fistp [si].integerY ; st: [y][x][r][w - r][h - r]
         
         ; wall effect index = 2 * (wall section)
         ;   = 2 * (x / 40)
@@ -835,6 +854,12 @@ wallCollision proc, pBall: near ptr circle ; st: [radius][width- radius][height 
     jc @f ; vy < 0
         ; y >= h - r && vy > 0
         bts [si].vy, 31 ; pos -> neg
+        ; y = y - 2(y - (h - r)) = 2(h - r) - y
+        fld st(4) ; st: [h - r][y][x][r][w - r][h - r]
+        fadd st, st ; st: [2(h - r)][y][x][r][w - r][h - r]
+        fsub st, st(1) ; st: [2(h - r) - y][y][x][r][w - r][h - r]
+        fst [si].y
+        fistp [si].integerY ; st: [y][x][r][w - r][h - r]
         
         ; wall effect index = 2 * (wall section)
         ;   = 2 * (20 - x / 40)
@@ -852,8 +877,8 @@ wallCollision proc, pBall: near ptr circle ; st: [radius][width- radius][height 
     @@:
     
     return:
-        fstp st ; st: [x][r][w - r][h - r][...]
-        fstp st ; st: [r][w - r][h - r][...]
+        fstp st ; st: [x][r][w - r][h - r]
+        fstp st ; st: [r][w - r][h - r]
         assume si: nothing
         ret
 wallCollision endp
