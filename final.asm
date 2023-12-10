@@ -1,4 +1,3 @@
-; http://www.brackeen.com/vga/unchain.html
 ; https://wanker742126.neocities.org/
 ; https://www.ctyme.com/intr/int.htm
 ; https://www.website.masmforum.com/tutorials/fptute/
@@ -56,10 +55,13 @@ matrix_x_vector macro m11, m21, m12, m22, v1, v2 ; index of fpu stack, result st
     fld st(v2 + 1) ; st: [v2][v1]...[v1][v2]
     fmul st, st(m12 + 2) ; st: [m12 * v2][v1]...[v1][v2]
     fxch st(v1 + 2) ; st: [v1][v1]...[m12 * v2][v2]
+
     fmul st, st(m11 + 2) ; st: [m11 * v1][v1]...[m12 * v2][v2]
     faddp st(v1 + 2), st ; st: [v1]...[m11 * v1 + m12 * v2][v2]
+    
     fmul st, st(m21 + 1) ; st: [m21 * v1]...[m11 * v1 + m12 * v2][v2]
     fxch st(v2 + 1) ; st: [v2]...[m11 * v1 + m12 * v2][m21 * v1]
+
     fmul st, st(m22 + 1) ; st: [m22 * v2]...[m11 * v1 + m12 * m1v22][m21 * v1]
     faddp st(v2 + 1), st ; st: ...[m11 * v1 + m12 * v2][m21 * v1 + m22 * v2]
 endm
@@ -84,7 +86,6 @@ endm
 .model compact, c, farstack
 .586
 
-
 screenWidth equ 320.0
 screenHeight equ 200.0
 
@@ -95,14 +96,6 @@ drawRectangle proto, left: word, top: word, squareWidth: word, height: word, col
 drawCircle proto, centerX: word, centerY: word, color: byte
 drawLine proto, x0: word, y0: word, x1: word, y1: word
 printScore proto, score: byte, color: byte, x: byte, y: byte
-printUint8 proto, number: byte
-printUint16 proto, number: word
-printUint32 proto, number: dword
-printInt8 proto, number: byte
-printInt16 proto, number: word
-printInt32 proto, number: dword
-printBinary proto, number: byte
-printHex32 proto, number: dword
 
 ; string
 enterToStartMessage db "Press Enter to start"
@@ -125,8 +118,7 @@ swapBallsMessage db "swap balls$"
 extraTurnMessage db "gain extra turn$"
 winMessage db " win !$"
 playAgainMessage db "Press Enter to play again$"
-exitMessage db "Press ESC to exit$"
-
+exitMessage db "Press ESC to exit$" 
 
 circlePixelRadius equ 12
 circleRadius real4 12.0
@@ -149,7 +141,7 @@ blueBall circle <"Blue$", , , , , , , >
 clockPeriod real4 ?
 lastTimerCount dd ?
 deltaT real4 ?
-fpuTemp dt ?
+fpuTemp dt ? ; 10 bytes
 widthMinusRadius real4 screenWidth
 heightMinusRadius real4 screenHeight
 frictionCoefficient real4 50.0
@@ -162,7 +154,7 @@ gameStatus db 00000000b
 ; [2] who's next? 0: red, 1: blue
 
 wallEffectProto typedef proto
-wallEffectPtr typedef near ptr wallEffectProto
+wallEffectPtr typedef near ptr wallEffectProto ; array for functions addr, the data inside is wallEffectProto
 wallEffect wallEffectPtr 26 dup(?)
 wallColor db 26 dup(?)
 
@@ -170,8 +162,6 @@ dashedlineColor db 08h, 08h, 08h, 08h, 08h, 00h, 00h, 00h
 dashedlineFlow dw 0
 
 randomNumber dd ?
-
-debugVariable dw 0
 
 .fardata? backBuffer
 db 320 * 200 dup(?) ; video backbuffer
@@ -253,19 +243,6 @@ main proc
             pop cx
             loop @b
         pop ds
-        ; enter text width = 20 words = 20 * 8 = 160 pixels, background width = 168 pixels
-        ; height = 3 lines = 3 * 8 = 24 pixels, background height = 32 pixels
-        invoke drawRectangle, 12, 132, 168, 32, 0
-        ; xor eax, eax
-        ; mov di, 132 * 320 + 12
-        ; mov cx, 32
-        ; @@:
-        ;     push cx
-        ;     mov cx, 168 / 4
-        ;     rep stosd
-        ;     add di, 320 - 168
-        ;     pop cx
-        ;     loop @b
         
         printStringWithAttribute enterToStartMessage, 28h, lengthof enterToStartMessage, 2, 17
         printStringWithAttribute hForHelpMessage, 37h, lengthof hForHelpMessage, 4, 19
@@ -376,11 +353,11 @@ gameStart proc
     mov [gameStatus], 0
     nextRandomNumber
     .if al & 10000000b
-        or [gameStatus], 10b ; blue first
+        or [gameStatus], 00000010b ; blue first
         and [gameStatus], 11111011b ; next is red
     .else
         and [gameStatus], 11111101b ; red first
-        or [gameStatus], 100b ; next is blue
+        or [gameStatus], 00000100b ; next is blue
     .endif
     
     .while 1
@@ -391,8 +368,6 @@ gameStart proc
         xor di, di
         mov cx, (320 * 200) / 4
         rep stosd
-        
-        moveTextCursor 0, 0
         
         ; get dt
         rdtsc
@@ -413,7 +388,7 @@ gameStart proc
         ; shoot if click
         mov ax, 03h
         int 33h
-        shr cx, 1
+        shr cx, 1 ; X max: 640 -> 320
         ; wait for negative edge
         test [mouseButtonStatus], 001b
         jz @f ; not pressed
@@ -426,20 +401,22 @@ gameStart proc
             .else
                 lea si, [redBall]
             .endif
+            assume si: near ptr circle
             or [gameStatus], 00000001b ; new round start
             mov word ptr [fpuTemp], cx
             fild word ptr [fpuTemp] ; st: [mouseX]
-            fsub [(circle ptr [si]).x] ; st: [mouseX - x1]
+            fsub [si].x ; st: [mouseX - x1]
             fadd st, st ; st: [(mouseX - x1) * 2]
-            fstp [(circle ptr [si]).vx] ; st: []
+            fstp [si].vx ; st: []
             mov word ptr [fpuTemp], dx
             fild word ptr [fpuTemp] ; st: [mouseY]
-            fsub [(circle ptr [si]).y] ; st: [mouseY - y1]
+            fsub [si].y ; st: [mouseY - y1]
             fadd st, st ; st: [(mouseY - y1) * 2]
-            fstp [(circle ptr [si]).vy] ; st: []
+            fstp [si].vy ; st: []
+            assume si: nothing
         @@:
-        mov mouseButtonStatus, bl
-        
+        mov [mouseButtonStatus], bl
+
         ; wall collision
         fld [heightMinusRadius] ; st: [h - r]
         fld [widthMinusRadius] ; st: [w - r][h - r]
@@ -501,17 +478,17 @@ gameStart proc
             fstp [redBall.vy] ; st: [-ny][nx][ny]
         @@:
         finit ; st: []
-        
+
         ; round not over yet && all velocity == 0: end of round
         mov eax, 7fffffffh ; 01111...111b, float has +0 and -0
         .if [gameStatus] & 1b && !([redBall.vx] & eax) && !([redBall.vy] & eax) && !([blueBall.vx] & eax) && !([redBall.vy] & eax)
-            xor [gameStatus], 1b ; end round
-            .if [gameStatus] & 100b ; who's next
-                or [gameStatus], 10b ; blue's turn
+            xor [gameStatus], 00000001b ; end round
+            .if [gameStatus] & 00000100b ; who's next
+                or [gameStatus], 00000010b ; blue's turn
                 and [gameStatus], 11111011b ; next is red
             .else
                 and [gameStatus], 11111101b ; red's turn
-                or [gameStatus], 100b ; next is blue
+                or [gameStatus], 00000100b ; next is blue
             .endif
         .endif
         
@@ -525,14 +502,14 @@ gameStart proc
         mov ax, 03h
         int 33h
         shr cx, 1
-        mov si, dashedlineFlow
-        dec dashedlineFlow
-        and dashedlineFlow, 0111b
+        mov si, [dashedlineFlow]
+        dec [dashedlineFlow]
+        and [dashedlineFlow], 0111b ; cycle from 0 to 7
         .if !([gameStatus] & 00000001b) ; if round not start yet
             .if [gameStatus] & 00000010b ; if player2's turn
-                invoke drawLine, blueBall.integerX, blueBall.integerY, cx, dx
+                invoke drawLine, [blueBall.integerX], [blueBall.integerY], cx, dx
             .else
-                invoke drawLine, redBall.integerX, redBall.integerY, cx, dx
+                invoke drawLine, [redBall.integerX], [redBall.integerY], cx, dx
             .endif
         .endif
         invoke drawCircle, [redBall.integerX], [redBall.integerY], 28h
@@ -601,6 +578,7 @@ gameStart proc
         rep movsd
         pop ds
         
+        ; game over judgement
         .if sbyte ptr [redBall.score] >= 10
             lea si, [redBall]
             .break
@@ -722,8 +700,7 @@ step proc, pBall: near ptr circle ; st: [dt]
     fmul [frictionCoefficient] ; st: [k * dt / ||v||][dt]
     fld1 ; st: [1][k * dt / ||v||][dt]
     fsubrp st(1), st ; st: [1 - k * dt / ||v||][dt]
-    ; if v < 0: v = 0
-    ftst
+    ftst ; if v < 0: v = 0
     fstsw ax
     fwait
     sahf
@@ -736,8 +713,7 @@ step proc, pBall: near ptr circle ; st: [dt]
     fstp [si].vx ; st: [1 - k * dt / ||v||][dt]
     fmul [si].vy ; st: [vy * (1 - k * dt / ||v||)][dt]
     fstp [si].vy ; st: [dt]
-    
-    
+        
     assume si: nothing
     ret
 step endp
@@ -758,7 +734,7 @@ wallCollision proc, pBall: near ptr circle ; st: [radius][width- radius][height 
     assume si: near ptr circle
     ; r = radius, w = width, h = height
     
-    ; left edge
+    ; left wall
     fld [si].x ; st: [x][r][w - r][h - r]
     fcomi_ 1 ; cmp x, r
     ja @f ; x > r
@@ -774,10 +750,10 @@ wallCollision proc, pBall: near ptr circle ; st: [radius][width- radius][height 
         fistp [si].integerX ; st: [x][r][w - r][h - r]
         
         ; wall effect index = 2 * (wall section)
-        ;   = 2 * (25 - y / 40)
-        mov ax, [si].integerY
+        ;   = 2 * (25 - floor(y / 40))
+        mov ax, [si].integerY 
         mov bl, 40
-        div bl ; y / 40 = al ... ah
+        div bl ; y / 40 = al ... ah, floor(y / 40) = al
         xor ah, ah
         neg ax
         add ax, 25
@@ -788,8 +764,8 @@ wallCollision proc, pBall: near ptr circle ; st: [radius][width- radius][height 
         invoke [wallEffect + bx]
         jmp topBottomCollision
     @@:
-    
-    ; right edge
+    ; st: [x][r][w - r][h - r]
+    ; right wall
     fcomi_ 2 ; cmp x, w - r
     jb @f ; x < w - r
     bt [si].vx, 31 ; sign bit of float
@@ -804,10 +780,10 @@ wallCollision proc, pBall: near ptr circle ; st: [radius][width- radius][height 
         fistp [si].integerX ; st: [x][r][w - r][h - r]
         
         ; wall effect index = 2 * (wall section)
-        ;   = 2 * (8 + y / 40)
+        ;   = 2 * (8 + floor(y / 40))
         mov ax, [si].integerY
         mov bl, 40
-        div bl ; y / 40 = al ... ah
+        div bl ; y / 40 = al ... ah, floor(y / 40) = al
         xor ah, ah
         add ax, 8
         shl ax, 1
@@ -818,7 +794,7 @@ wallCollision proc, pBall: near ptr circle ; st: [radius][width- radius][height 
     @@:
     
     topBottomCollision:
-    ; top edge
+    ; top wall
     fld [si].y ; st: [y][x][r][w - r][h - r]
     fcomi_ 2 ; cmp y, r
     ja @f ; y > r
@@ -834,10 +810,10 @@ wallCollision proc, pBall: near ptr circle ; st: [radius][width- radius][height 
         fistp [si].integerY ; st: [y][x][r][w - r][h - r]
         
         ; wall effect index = 2 * (wall section)
-        ;   = 2 * (x / 40)
+        ;   = 2 * floor(x / 40)
         mov ax, [si].integerX
         mov bl, 40
-        div bl ; y / 40 = al ... ah
+        div bl ; x / 40 = al ... ah, floor(x / 40) = al
         xor ah, ah
         shl ax, 1
         mov bx, ax
@@ -847,7 +823,7 @@ wallCollision proc, pBall: near ptr circle ; st: [radius][width- radius][height 
         jmp return
     @@:
     
-    ; bottom edge
+    ; bottom wall
     fcomi_ 4 ; cmp y, h - r
     jb @f ; y < h - r
     bt [si].vy, 31 ; sign bit of float
@@ -862,10 +838,10 @@ wallCollision proc, pBall: near ptr circle ; st: [radius][width- radius][height 
         fistp [si].integerY ; st: [y][x][r][w - r][h - r]
         
         ; wall effect index = 2 * (wall section)
-        ;   = 2 * (20 - x / 40)
+        ;   = 2 * (20 - floor(x / 40))
         mov ax, [si].integerX
         mov bl, 40
-        div bl ; y / 40 = al ... ah
+        div bl ; x / 40 = al ... ah, floor(x / 40) = al
         xor ah, ah
         neg ax
         add ax, 20
@@ -917,7 +893,7 @@ drawCircle proc, centerX: word, centerY: word, color: byte
     mov bx, si
     add bx, (circlePixelRadius * 2 + 1) * 2 ; 2bytes * (2r + 1)
     
-    mov al, color ; color white
+    mov al, [color]
     .while si != bx
         mov cx, [si]
         rep stosb
@@ -995,6 +971,41 @@ drawLine proc, x0: word, y0: word, x1: word, y1: word ; si would be the flashing
     
     ret
 drawLine endp
+printScore proc, score: byte, color: byte, x: byte, y: byte
+    moveTextCursor x, y
+    mov ah, 0eh
+    xor bh, bh
+    mov bl, color
+    .if sbyte ptr [score] < 0
+        neg [score]
+        mov al, '-'
+        int 10h
+    .elseif sbyte ptr [score] == 0
+        mov al, '0'
+        int 10h
+        ret
+    .endif
+    
+    mov al, [score]
+    xor ecx, ecx
+    mov dl, 10
+    .repeat
+        xor ah, ah
+        div dl
+        or ah, 30h
+        push ax
+        inc ecx
+    .until al == 0
+    
+    mov ah, 0eh
+    @@:
+        pop dx
+        mov al, dh
+        int 10h
+        loop @b
+    
+    ret
+printScore endp
 
 ; wall effect function
 noEffect proc
@@ -1038,333 +1049,10 @@ extraTurn proc
     .if si == offset [redball]
         and [gameStatus], 11111011b ; next is red
     .else
-        or [gameStatus], 100b ; next is blue
+        or [gameStatus], 00000100b ; next is blue
     .endif
     ret
 extraTurn endp
-
-printScore proc, score: byte, color: byte, x: byte, y: byte
-    moveTextCursor x, y
-    mov ah, 0eh
-    xor bh, bh
-    mov bl, color
-    .if sbyte ptr [score] < 0
-        neg [score]
-        mov al, '-'
-        int 10h
-    .elseif sbyte ptr [score] == 0
-        mov al, '0'
-        int 10h
-        ret
-    .endif
-    
-    mov al, [score]
-    xor ecx, ecx
-    mov dl, 10
-    .repeat
-        xor ah, ah
-        div dl
-        or ah, 30h
-        push ax
-        inc ecx
-    .until al == 0
-    
-    mov ah, 0eh
-    @@:
-        pop dx
-        mov al, dh
-        int 10h
-        loop @b
-    
-    ret
-printScore endp
-
-printUint8 proc uses ax dx ds si, number: byte
-    local outputString[4]: byte
-    
-    mov si, 3
-    mov outputString[si], '$'
-    
-    mov dl, 10
-    mov al, number
-    test al, al
-    jne divide10
-        ; print '0' if number == 0
-        mov dl, '0'
-        mov ah, 02h
-        int 21h
-        ret
-        
-    divide10:
-        xor ah, ah
-        div dl
-        or ah, 30h
-        dec si
-        mov outputString[si], ah
-        
-        test al, al
-        jne divide10
-    
-    mov ax, ss
-    mov ds, ax
-    mov ah, 09h
-    lea dx, outputString[si]
-    int 21h
-    
-    ret
-printUint8 endp
-printUint16 proc uses ax cx dx ds si, number: word
-    local outputString[6]: byte
-    
-    mov si, 5
-    mov outputString[si], '$'
-    
-    mov cx, 10
-    mov ax, number
-    test ax, ax
-    jne divide10
-        ; print '0' if number == 0
-        mov dl, '0'
-        mov ah, 02h
-        int 21h
-        ret
-        
-    divide10:
-        xor dx, dx
-        div cx
-        or dl, 30h
-        dec si
-        mov outputString[si], dl
-        
-        test ax, ax
-        jne divide10
-    
-    mov ax, ss
-    mov ds, ax
-    mov ah, 09h
-    lea dx, outputString[si]
-    int 21h
-    
-    ret
-printUint16 endp
-printUint32 proc uses ax cx dx ds si, number: dword
-    local outputString[11]: byte
-    
-    mov si, 10
-    mov outputString[si], '$'
-    
-    mov cx, 10
-    cmp word ptr number, 0
-    jne divide10
-    cmp word ptr number + 2, 0
-    jne divide10
-        ; print '0' if number == 0
-        mov dl, '0'
-        mov ah, 02h
-        int 21h
-        ret
-        
-    divide10:
-        ; dx:ax(1234:5678) / 10
-        ; (1234(2^16) + 5678) / 10
-        ; 1234(2^16) / 10 + 5678 / 10
-        ; (123 + 4 / 10)(2^16) + 5678 / 10
-        ; 123(2^16) + (4(2^16) + 5678) / 10
-        ; 123:(4:5678 / 10)
-        
-        ; dx:ax(1234) / cx(10) = ax(123) ... dx(4)
-        xor dx, dx
-        mov ax, word ptr number + 2
-        div cx
-        mov word ptr number + 2, ax
-        
-        ; dx:ax(4:5678) / cx(10) = ax ... dx
-        mov ax, word ptr number
-        div cx
-        mov word ptr number, ax
-        
-        or dl, 30h
-        dec si
-        mov outputString[si], dl
-        
-        cmp word ptr number, 0
-        jne divide10
-        cmp word ptr number + 2, 0
-        jne divide10
-        
-    mov ax, ss
-    mov ds, ax
-    mov ah, 09h
-    lea dx, outputString[si]
-    int 21h
-        
-    ret
-printUint32 endp
-printInt8 proc uses ax dx ds si, number: byte
-    local outputString[5]: byte
-    
-    mov si, 4
-    mov outputString[si], '$'
-    
-    mov dl, 10
-    mov al, number
-    test al, al
-    jns notNegative
-        neg al
-        jmp divide10
-    notNegative:
-    jne divide10
-        ; print '0' if number == 0
-        mov dl, '0'
-        mov ah, 02h
-        int 21h
-        ret
-        
-    divide10:
-        xor ah, ah
-        div dl
-        or ah, 30h
-        dec si
-        mov outputString[si], ah
-        
-        test al, al
-        jne divide10
-    
-    mov al, number
-    test al, al
-    jns notNegative2
-        dec si
-        mov outputString[si], '-'
-    notNegative2:
-    mov ax, ss
-    mov ds, ax
-    mov ah, 09h
-    lea dx, outputString[si]
-    int 21h
-    
-    ret
-printInt8 endp
-printInt16 proc uses ax cx dx ds si, number: word
-    local outputString[7]: byte
-    
-    mov si, 6
-    mov outputString[si], '$'
-    
-    mov cx, 10
-    mov ax, number
-    test ax, ax
-    jns notNegative
-        neg ax
-        jmp divide10
-    notNegative:
-    jne divide10
-        ; print '0' if number == 0
-        mov dl, '0'
-        mov ah, 02h
-        int 21h
-        ret
-        
-    divide10:
-        xor dx, dx
-        div cx
-        or dl, 30h
-        dec si
-        mov outputString[si], dl
-        
-        test ax, ax
-        jne divide10
-    
-    mov ax, number
-    test ax, ax
-    jns notNegative2
-        dec si
-        mov outputString[si], '-'
-    notNegative2:
-    mov ax, ss
-    mov ds, ax
-    mov ah, 09h
-    lea dx, outputString[si]
-    int 21h
-    
-    ret
-printInt16 endp
-printInt32 proc uses eax cx dx ds si, number: dword
-    local outputString[12]: byte
-    
-    mov si, 11
-    mov outputString[si], '$'
-    
-    mov ecx, 10
-    mov eax, number
-    test eax, eax
-    jns notNegative
-        neg eax
-        jmp divide10
-    notNegative:
-    jne divide10
-        ; print '0' if number == 0
-        mov dl, '0'
-        mov ah, 02h
-        int 21h
-        ret
-        
-    divide10:
-        xor edx, edx
-        div ecx
-        or dl, 30h
-        dec si
-        mov outputString[si], dl
-        
-        test eax, eax
-        jne divide10
-        
-    mov eax, number
-    test eax, eax
-    jns notNegative2
-        dec si
-        mov outputString[si], '-'
-    notNegative2:
-    mov ax, ss
-    mov ds, ax
-    mov ah, 09h
-    lea dx, outputString[si]
-    int 21h
-    
-    ret
-printInt32 endp
-printBinary proc uses ax cx dx, number: byte
-    mov ah, 02h
-    mov cx, 8
-    @@:
-        mov dl, 30h
-        shl number, 1
-        adc dl, 0
-        int 21h
-    loop @b
-    
-    ret
-printBinary endp
-printHex32 proc uses ax cx dx, number: dword
-    mov ah, 02h
-    mov dl, '0'
-    int 21h
-    mov dl, 'x'
-    int 21h
-    mov cx, 8
-    @@:
-        rol number, 4
-        mov dl, 0fh
-        and dl, byte ptr [number]
-        .if dl < 10
-            add dl, '0'
-        .else
-            add dl, 'A' - 10
-        .endif
-        int 21h
-        loop @b
-    
-    ret
-printHex32 endp
 
 .fardata coverImage
 imageWidth equ 320
