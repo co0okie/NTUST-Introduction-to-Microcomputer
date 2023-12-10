@@ -20,10 +20,33 @@ moveTextCursor macro x, y
     mov dl, x
     int 10h
 endm
+printChar macro char, color, times
+    mov ah, 09h
+    mov al, char
+    mov bh, 0
+    mov cx, times
+    mov bl, color
+    int 10h
+endm
 printString macro string
     mov ah, 09h
     lea dx, string
     int 21h
+endm
+printStringWithAttribute macro string, color, length, x, y
+    push bp
+    mov ax, @data
+    mov es, ax
+    mov ah, 13h
+    mov al, 0
+    mov bh, 0
+    mov bl, color
+    mov cx, length
+    mov dh, y
+    mov dl, x
+    lea bp, string
+    int 10h
+    pop bp
 endm
 matrix_x_vector macro m11, m21, m12, m22, v1, v2 ; index of fpu stack, result stored in v1, v2
     ; /m11 m12\ /v1\ = /m11 * v1 + m12 * v2\
@@ -67,6 +90,7 @@ screenHeight equ 200.0
 .data
 ; procedure prototype
 step proto, pBall: near ptr circle
+drawRectangle proto, left: word, top: word, squareWidth: word, height: word, color: byte
 drawCircle proto, centerX: word, centerY: word, color: byte
 drawLine proto, x0: word, y0: word, x1: word, y1: word
 printUint8 proto, number: byte
@@ -79,15 +103,28 @@ printBinary proto, number: byte
 printHex32 proto, number: dword
 
 ; string
-winMessage db " win !$"
-playAgainMessage db "Press Enter to play again.$"
-exitMessage db "Press ESC to exit.$"
+enterToStartMessage db "Press Enter to start"
+hForHelpMessage db "Press H for help"
 gameIntroduction \
-    db "This is a two-player battle game where red and blue take turns. "
-    db "Click the left mouse button to shoot the ball towards the mouse pointer; "
-    db "the dashed line length indicates the shooting power. "
-    db "The first to reach 10 points wins. "
-    db "Hitting walls of different colors triggers various effects, including:$"
+    db "This is a two-player battle game where", 13, 10, " "
+    db "red and blue take turns. Click the", 13, 10, " "
+    db "left mouse button to shoot the ball", 13, 10 ," "
+    db "towards the mouse pointer; the dashed", 13, 10 ," "
+    db "line length indicates the shooting", 13, 10 ," "
+    db "power. The first to reach 10 points", 13, 10 ," "
+    db "wins. Hitting walls of different", 13, 10 ," "
+    db "colors triggers various effects,", 13, 10 ," "
+    db "including:$"
+normalWallMessage db "no effect$"
+increaseScoreMessage db "score +1$"
+increase3ScoreMessage db "score +3$"
+decreaseScoreMessage db "score -1$"
+swapBallsMessage db "swap balls$"
+extraTurnMessage db "gain extra turn$"
+winMessage db " win !$"
+playAgainMessage db "Press Enter to play again$"
+exitMessage db "Press ESC to exit$"
+
 
 circlePixelRadius equ 12
 circleRadius real4 12.0
@@ -116,11 +153,11 @@ heightMinusRadius real4 screenHeight
 frictionCoefficient real4 50.0
 
 mouseButtonStatus db ?
-whoseTurn dw offset redBall
 
 gameStatus db 00000000b
 ; [0] 1: round start, 0: round end
-; [1] 0: red's turn, 1: blue's turn
+; [1] who's turn? 0: red, 1: blue
+; [2] who's next? 0: red, 1: blue
 
 wallEffectProto typedef proto
 wallEffectPtr typedef near ptr wallEffectProto
@@ -158,6 +195,7 @@ main proc
     rdtsc
     mov [randomNumber], eax
     
+    ; get CPU clock period
     ; 1 tick = 1 / 1193182 s
     ; clock = rdtsc cpu clock
     ; clockPeriod
@@ -186,15 +224,7 @@ main proc
     in al, 40h
     mov ch, al
     pop eax
-    invoke printUint32, eax
-    printNewline
-    invoke printUint16, bx
-    printNewline
-    invoke printUint16, cx
-    printNewline
     sub bx, cx ; bx = tick in 4096 clock
-    invoke printUint16, bx
-    printNewline
     mov word ptr [fpuTemp], bx
     fild word ptr [fpuTemp] ; st: [tickIn4096Clock]
     mov word ptr [fpuTemp], 4096
@@ -203,60 +233,56 @@ main proc
     fidiv dword ptr [fpuTemp] ; st: [tickIn4096Clock / 4096 / 1193182 = clockPeriod]
     fstp [clockPeriod] ; st: []
     
-    startMenu:
-    
-    ; cover image
-    push ds
-    mov ax, coverImage
-    mov ds, ax
-    lea si, image
-    mov ax, 0a000h
-    mov es, ax
-    mov di, imageTop * 320 + imageLeft
-    mov cx, imageHeight
-    @@:
-        push cx
-        mov cx, imageWidth
-        rep movsb
-        add di, 320 - imageWidth
-        pop cx
-        loop @b
-    pop ds
-    
-    .repeat
-        mov ah, 00h
-        int 16h
-    .until al == 0dh ; enter
-    
-    call gameStart
-    cmp ax, 1
-    je exit
-    
-    gameover:
-        ; print win message
-        moveTextCursor 15, 12
-        printString (circle ptr [si]).id
-        printString winMessage
-        ; print message
-        moveTextCursor (40 - (lengthof playAgainMessage - 1)) / 2, 16
-        printString playAgainMessage
-        moveTextCursor (40 - (lengthof exitMessage - 1)) / 2, 18
-        printString exitMessage
+    .while 1 ; game cycle
+        ; cover image
+        push ds
+        mov ax, coverImage
+        mov ds, ax
+        lea si, image
+        mov ax, 0a000h
+        mov es, ax
+        mov di, imageTop * 320 + imageLeft
+        mov cx, imageHeight
+        @@:
+            push cx
+            mov cx, imageWidth
+            rep movsb
+            add di, 320 - imageWidth
+            pop cx
+            loop @b
+        pop ds
+        ; enter text width = 20 words = 20 * 8 = 160 pixels, background width = 168 pixels
+        ; height = 3 lines = 3 * 8 = 24 pixels, background height = 32 pixels
+        invoke drawRectangle, 12, 132, 168, 32, 0
+        ; xor eax, eax
+        ; mov di, 132 * 320 + 12
+        ; mov cx, 32
+        ; @@:
+        ;     push cx
+        ;     mov cx, 168 / 4
+        ;     rep stosd
+        ;     add di, 320 - 168
+        ;     pop cx
+        ;     loop @b
+        
+        printStringWithAttribute enterToStartMessage, 28h, lengthof enterToStartMessage, 2, 17
+        printStringWithAttribute hForHelpMessage, 37h, lengthof hForHelpMessage, 4, 19
         
         
-        .while 1
+        .while 1 ; wait user input
             mov ah, 00h
             int 16h
-            cmp al, 1bh
-            je exit
-            cmp al, 0dh
-            je startMenu
+            .if al == 1bh ; esc
+                call exitGame
+            .elseif al == 'h' || al == 'H'
+                call helpPage
+                .break
+            .elseif al == 0dh ; enter
+                call gameStart
+                .break
+            .endif
         .endw
-    
-    exit:
-        mov ax, 03h
-        int 10h
-        .exit
+    .endw
 main endp
 
 gameStart proc
@@ -287,23 +313,31 @@ gameStart proc
     mov [wallColor + 0 * 1], 2fh ; green
     mov esi, 1
     .while esi != 26
-        ;      noEffect: 80% = ~ 52428
-        ; increaseScore: 10% = ~ 58981
-        ; decreaseScore: 7% = ~ 63569
-        ;     swapBalls: 3% = ~ 65535
+        ;  increaseScore: 15% = ~ 644245094
+        ; increase3Score: 2% = ~ 730144440
+        ;  decreaseScore: 5% = ~ 944892805
+        ;      swapBalls: 2% = ~ 1030792151
+        ;      extraTurn: 2% = ~ 1116691497
+        ;       noEffect: remain% ~ 4294967295
         nextRandomNumber
-        .if word ptr [randomNumber] <= 52428
-            mov [wallEffect + esi * 2], noEffect
-            mov byte ptr [wallColor + esi * 1], 0fh ; white
-        .elseif word ptr [randomNumber] <= 58981
+        .if [randomNumber] <= 644245094
             mov [wallEffect + esi * 2], increaseScore
             mov byte ptr [wallColor + esi * 1], 2fh ; green
-        .elseif word ptr [randomNumber] <= 63569
+        .elseif [randomNumber] <= 730144440
+            mov [wallEffect + esi * 2], increase3Score
+            mov byte ptr [wallColor + esi * 1], 34h ; aqua
+        .elseif [randomNumber] <= 944892805
             mov [wallEffect + esi * 2], decreaseScore
             mov byte ptr [wallColor + esi * 1], 28h ; red
-        .else
+        .elseif [randomNumber] <= 1030792151
             mov [wallEffect + esi * 2], swapBalls
             mov byte ptr [wallColor + esi * 1], 22h ; purple
+        .elseif [randomNumber] <= 1116691497
+            mov [wallEffect + esi * 2], extraTurn
+            mov byte ptr [wallColor + esi * 1], 2ch ; yellow
+        .else
+            mov [wallEffect + esi * 2], noEffect
+            mov byte ptr [wallColor + esi * 1], 0fh ; white
         .endif
         
         inc esi
@@ -335,6 +369,17 @@ gameStart proc
     
     rdtsc
     mov [lastTimerCount], eax
+    
+    ; reset game status and choose random player to start
+    mov [gameStatus], 0
+    nextRandomNumber
+    .if al & 10000000b
+        or [gameStatus], 10b ; blue first
+        and [gameStatus], 11111011b ; next is red
+    .else
+        and [gameStatus], 11111101b ; red first
+        or [gameStatus], 100b ; next is blue
+    .endif
     
     .while 1
         ; clear backbuffer
@@ -464,8 +509,15 @@ gameStart proc
         
         ; round not over yet && all velocity == 0: end of round
         mov eax, 7fffffffh ; 01111...111b, float has +0 and -0
-        .if [gameStatus] & 00000001b && !([redBall.vx] & eax) && !([redBall.vy] & eax) && !([blueBall.vx] & eax) && !([redBall.vy] & eax)
-            xor [gameStatus], 00000011b ; end round, change player
+        .if [gameStatus] & 1b && !([redBall.vx] & eax) && !([redBall.vy] & eax) && !([blueBall.vx] & eax) && !([redBall.vy] & eax)
+            xor [gameStatus], 1b ; end round
+            .if [gameStatus] & 100b ; who's next
+                or [gameStatus], 10b ; blue's turn
+                and [gameStatus], 11111011b ; next is red
+            .else
+                and [gameStatus], 11111101b ; red's turn
+                or [gameStatus], 100b ; next is blue
+            .endif
         .endif
         
         ; invoke printBinary, [gameStatus]
@@ -498,7 +550,7 @@ gameStart proc
             .endif
         .endif
         invoke drawCircle, [redBall.integerX], [redBall.integerY], 28h
-        invoke drawCircle, [blueBall.integerX], [blueBall.integerY], 20h
+        invoke drawCircle, [blueBall.integerX], [blueBall.integerY], 37h
         ; draw wall
         lea si, wallColor
         xor di, di
@@ -562,12 +614,10 @@ gameStart proc
         rep movsd
         pop ds
         
-        .if sword ptr [redBall.score] >= 3
-            xor ax, ax
+        .if sword ptr [redBall.score] >= 7
             lea si, [redBall]
             .break
-        .elseif sword ptr [blueBall.score] >= 3
-            xor ax, ax
+        .elseif sword ptr [blueBall.score] >= 7
             lea si, [blueBall]
             .break
         .endif
@@ -576,14 +626,72 @@ gameStart proc
         mov dl, 0ffh
         int 21h
         .continue .if zero?
-        .if al == 1bh ; esc
-            mov ax, 1
-            .break
-        .endif
+        cmp al, 1bh ; esc
+        je return
     .endw
     
-    ret
+    ; print win message
+    moveTextCursor 15, 12
+    printString (circle ptr [si]).id
+    printString winMessage
+    ; print play again, exit message
+    moveTextCursor (40 - (lengthof playAgainMessage - 1)) / 2, 16
+    printString [playAgainMessage]
+    moveTextCursor (40 - (lengthof exitMessage - 1)) / 2, 18
+    printString [exitMessage]
+    
+    .repeat
+        mov ah, 00h
+        int 16h
+        .if al == 1bh ; esc
+            call exitGame
+        .endif
+    .until al == 0dh ; enter
+        
+    return:
+        ret
 gameStart endp
+helpPage proc
+    ; clear screen
+    mov ax, 0a000h
+    mov es, ax
+    xor eax, eax
+    xor di, di
+    mov cx, (320 * 200) / 4
+    rep stosd
+    
+    moveTextCursor 1, 1
+    printString [gameIntroduction]
+    
+    invoke drawRectangle, 2 * 8, 12 * 8, 8, 8, 0fh ; white
+    moveTextCursor 4, 12
+    printString [normalWallMessage]
+    invoke drawRectangle, 2 * 8, 14 * 8, 8, 8, 2fh ; green
+    moveTextCursor 4, 14
+    printString [increaseScoreMessage]
+    invoke drawRectangle, 2 * 8, 16 * 8, 8, 8, 34h ; aqua
+    moveTextCursor 4, 16
+    printString [increase3ScoreMessage]
+    invoke drawRectangle, 2 * 8, 18 * 8, 8, 8, 28h ; red
+    moveTextCursor 4, 18
+    printString [decreaseScoreMessage]
+    invoke drawRectangle, 2 * 8, 20 * 8, 8, 8, 22h ; purple
+    moveTextCursor 4, 20
+    printString [swapBallsMessage]
+    invoke drawRectangle, 20 * 8, 12 * 8, 8, 8, 2ch ; yellow
+    moveTextCursor 22, 12
+    printString [extraTurnMessage]
+    
+    mov ah, 00h
+    int 16h
+    
+    ret
+helpPage endp
+exitGame proc
+    mov ax, 03h
+    int 10h
+    .exit
+exitGame endp
 
 step proc, pBall: near ptr circle ; st: [dt]
     mov si, [pBall]
@@ -753,6 +861,24 @@ wallCollision proc, pBall: near ptr circle ; st: [radius][width- radius][height 
         assume si: nothing
         ret
 wallCollision endp
+drawRectangle proc, left: word, top: word, squareWidth: word, height: word, color: byte
+    mov ax, 320
+    mul top
+    add ax, left
+    mov di, ax
+    mov bx, 320
+    sub bx, squareWidth
+    mov al, color
+    mov cx, height
+    @@:
+        push cx
+        mov cx, squareWidth
+        rep stosb
+        add di, bx
+        pop cx
+        loop @b
+    ret
+drawRectangle endp
 drawCircle proc, centerX: word, centerY: word, color: byte
     ; di = (centerY - circleRadius) * 320 + (centerX - circleWidth[0] >> 1)
     mov ax, [centerY]
@@ -857,6 +983,10 @@ increaseScore proc
     inc (circle ptr [si]).score
     ret
 increaseScore endp
+increase3Score proc
+    add (circle ptr [si]).score, 3
+    ret
+increase3Score endp
 decreaseScore proc
     dec (circle ptr [si]).score
     ret
@@ -883,6 +1013,14 @@ swapBalls proc
     
     ret
 swapBalls endp
+extraTurn proc
+    .if si == offset [redball]
+        and [gameStatus], 11111011b ; next is red
+    .else
+        or [gameStatus], 100b ; next is blue
+    .endif
+    ret
+extraTurn endp
 
 printUint8 proc uses ax dx ds si, number: byte
     local outputString[4]: byte
