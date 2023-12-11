@@ -78,7 +78,7 @@ endm
 ; procedure prototype
 step proto, pBall: near ptr circle
 wallCollision proto, pBall: near ptr circle
-drawRectangle proto, left: word, top: word, squareWidth: word, height: word, color: byte
+drawRectangle proto, left: word, top: word, rectWidth: word, height: word, color: byte
 drawCircle proto, centerX: word, centerY: word, color: byte
 drawLine proto, x0: word, y0: word, x1: word, y1: word
 printScore proto, score: byte, color: byte, x: byte, y: byte
@@ -171,18 +171,12 @@ main proc
         push ds
         mov ax, coverImage
         mov ds, ax
-        lea si, image
         mov ax, 0a000h
         mov es, ax
+        xor si, si
         xor di, di
-        mov cx, imageHeight
-        @@:
-            push cx
-            mov cx, imageWidth
-            rep movsb
-            add di, 320 - imageWidth
-            pop cx
-            loop @b
+        mov cx, (320 * 200) / 4
+        rep movsd
         pop ds
         
         printStringWithAttribute enterToStartMessage, 28h, lengthof enterToStartMessage, 2, 17
@@ -492,8 +486,9 @@ step proc, pBall: near ptr circle ; st: [dt]
     fstp [si].y ; st: [dt]
     
     ; friction:
-    ;   f = m * a = k_f * n * (-v / ||v||), m = mass, a = accelleration, k_f = friction coefficient, n = normal force
-    ;   a = -k_f * n / m * (-v / ||v||) = -k * v / ||v||
+    ;   f = m * a = k * n * (-v / ||v||), m = mass = 1, a = accelleration,
+    ;   k = friction coefficient, n = normal force = 1
+    ;   a = -k * n / m * (-v / ||v||) = -k * v / ||v||
     ;   v = v0 + a0 * dt = v0 - k * v0 / ||v0|| * dt 
     ;     = v0 * (1 - k * dt / ||v0||), k > 0, 1 - k * dt / ||v0|| >= 0
     fld [si].vx ; st: [vx][dt]
@@ -979,18 +974,18 @@ helpPage proc
     
     ret
 helpPage endp
-drawRectangle proc, left: word, top: word, squareWidth: word, height: word, color: byte
+drawRectangle proc, left: word, top: word, rectWidth: word, height: word, color: byte
     mov ax, 320
     mul top
     add ax, left
     mov di, ax
     mov bx, 320
-    sub bx, squareWidth
+    sub bx, rectWidth
     mov al, color
     mov cx, height
     @@:
         push cx
-        mov cx, squareWidth
+        mov cx, rectWidth
         rep stosb
         add di, bx
         pop cx
@@ -1052,8 +1047,6 @@ extraTurn proc
 extraTurn endp
 
 .fardata coverImage
-imageWidth equ 320
-imageHeight equ 200
 image \
     db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
     db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
