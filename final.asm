@@ -1,31 +1,19 @@
-; https://wanker742126.neocities.org/
-; https://www.ctyme.com/intr/int.htm
-; https://www.website.masmforum.com/tutorials/fptute/
-; https://stackoverflow.com/questions/13450894/struct-or-class-in-assembly
-; https://en.wikipedia.org/wiki/Linear_congruential_generator#Parameters_in_common_use
-; https://masm32.com/board/index.php?topic=7837.0
-; https://stackoverflow.com/questions/67066755/assembly-x86-16-bit-vsync-screen-tearing
+; Reference:
+;   https://wanker742126.neocities.org/
+;   https://www.ctyme.com/intr/int.htm
+;   https://www.website.masmforum.com/tutorials/fptute/
+;   https://stackoverflow.com/questions/13450894/struct-or-class-in-assembly
+;   https://en.wikipedia.org/wiki/Linear_congruential_generator#Parameters_in_common_use
+;   https://en.wikipedia.org/wiki/Fisher%E2%80%93Yates_shuffle#The_modern_algorithm
+;   https://masm32.com/board/index.php?topic=7837.0
+;   https://stackoverflow.com/questions/67066755/assembly-x86-16-bit-vsync-screen-tearing
+;   https://learn.microsoft.com/en-us/cpp/assembler/masm/dot-model?view=msvc-170
 
-printNewline macro
-    mov ah, 02h
-    mov dl, 13
-    int 21h
-    mov dl, 10
-    int 21h
-endm
 moveTextCursor macro x, y
     mov ah, 02h
     xor bh, bh
     mov dh, y
     mov dl, x
-    int 10h
-endm
-printChar macro char, color, times
-    mov ah, 09h
-    mov al, char
-    mov bh, 0
-    mov cx, times
-    mov bl, color
     int 10h
 endm
 printString macro string
@@ -65,10 +53,10 @@ matrix_x_vector macro m11, m21, m12, m22, v1, v2 ; index of fpu stack, result st
     fmul st, st(m22 + 1) ; st: [m22 * v2]...[m11 * v1 + m12 * m1v22][m21 * v1]
     faddp st(v2 + 1), st ; st: ...[m11 * v1 + m12 * v2][m21 * v1 + m22 * v2]
 endm
-fcomi_ macro i ; see fcomi in https://www.website.masmforum.com/tutorials/fptute/fpuchap7.htm
+fcomi_ macro i ; https://www.website.masmforum.com/tutorials/fptute/fpuchap7.htm#fcomi
     db 0dbh, 0f0h + i
 endm
-fcomip_ macro i ; see fcomip in https://www.website.masmforum.com/tutorials/fptute/fpuchap7.htm
+fcomip_ macro i ; https://www.website.masmforum.com/tutorials/fptute/fpuchap7.htm#fcomip
     db 0dfh, 0f0h + i
 endm
 nextRandomNumber macro
@@ -82,16 +70,14 @@ endm
 ; https://learn.microsoft.com/en-us/cpp/assembler/masm/dot-model?view=msvc-170
 ; compact: multiple data segment
 ; c: c calling convention
-; farstack: independent stack (SS != DS)
+; farstack: independent stack segment (SS != DS)
 .model compact, c, farstack
 .586
-
-screenWidth equ 320.0
-screenHeight equ 200.0
 
 .data
 ; procedure prototype
 step proto, pBall: near ptr circle
+wallCollision proto, pBall: near ptr circle
 drawRectangle proto, left: word, top: word, squareWidth: word, height: word, color: byte
 drawCircle proto, centerX: word, centerY: word, color: byte
 drawLine proto, x0: word, y0: word, x1: word, y1: word
@@ -120,10 +106,9 @@ winMessage db " win !$"
 playAgainMessage db "Press Enter to play again$"
 exitMessage db "Press ESC to exit$" 
 
-circlePixelRadius equ 12
+circleIntegerRadius equ 12
 circleRadius real4 12.0
-circleWidth \
-dw 7, 11, 15, 17, 19, 21, 21, 23, 23, 25, 25, 25, 25, 25, 25, 25, 23, 23, 21, 21, 19, 17, 15, 11, 7
+circleWidth dw 7, 11, 15, 17, 19, 21, 21, 23, 23, 25, 25, 25, 25, 25, 25, 25, 23, 23, 21, 21, 19, 17, 15, 11, 7
 circle struct
     id db 5 dup(?)
     x real4 ?
@@ -134,7 +119,6 @@ circle struct
     integerY dw ?
     score db ?
 circle ends
-wallCollision proto, pBall: near ptr circle
 redBall circle <"Red$", , , , , , , >
 blueBall circle <"Blue$", , , , , , , >
 
@@ -142,8 +126,8 @@ clockPeriod real4 ?
 lastTimerCount dd ?
 deltaT real4 ?
 fpuTemp dt ? ; 10 bytes
-widthMinusRadius real4 screenWidth
-heightMinusRadius real4 screenHeight
+widthMinusRadius real4 308.0 ; 320 - 12
+heightMinusRadius real4 188.0 ; 200 - 12
 frictionCoefficient real4 50.0
 
 mouseButtonStatus db ?
@@ -153,6 +137,7 @@ gameStatus db 00000000b
 ; [1] who's turn? 0: red, 1: blue
 ; [2] who's next? 0: red, 1: blue
 
+; https://masm32.com/board/index.php?topic=7837.0
 wallEffectProto typedef proto
 wallEffectPtr typedef near ptr wallEffectProto ; array for functions addr, the data inside is wallEffectProto
 wallEffect wallEffectPtr 26 dup(?)
@@ -175,19 +160,51 @@ main proc
     mov ax, 13h
     int 10h
     
-    ; calculate constant
-    fld [circleRadius] ; st: [radius]
-    fld [widthMinusRadius] ; st: [width][radius]
-    fsub st, st(1) ; st: [width - radius][radius]
-    fstp [widthMinusRadius] ; st: [radius]
-    fsubr [heightMinusRadius] ; st: [height - radius]
-    fstp [heightMinusRadius] ; st: []
-    
     ; random number seed
     rdtsc
     mov [randomNumber], eax
     
-    ; get CPU clock period
+    call getCPUClockPeriod
+    
+    .while 1 ; game cycle
+        ; cover image
+        push ds
+        mov ax, coverImage
+        mov ds, ax
+        lea si, image
+        mov ax, 0a000h
+        mov es, ax
+        xor di, di
+        mov cx, imageHeight
+        @@:
+            push cx
+            mov cx, imageWidth
+            rep movsb
+            add di, 320 - imageWidth
+            pop cx
+            loop @b
+        pop ds
+        
+        printStringWithAttribute enterToStartMessage, 28h, lengthof enterToStartMessage, 2, 17
+        printStringWithAttribute hForHelpMessage, 37h, lengthof hForHelpMessage, 4, 19
+        
+        
+        .while 1 ; wait user input
+            mov ah, 00h
+            int 16h
+            .if al == 1bh ; esc
+                call exitGame
+            .elseif al == 'h' || al == 'H'
+                call helpPage
+                .break
+            .elseif al == 0dh ; enter
+                call gameStart
+                .break
+            .endif
+        .endw
+    .endw
+main endp
+getCPUClockPeriod proc
     ; 1 tick = 1 / 1193182 s
     ; clock = rdtsc cpu clock
     ; clockPeriod
@@ -225,44 +242,8 @@ main proc
     fidiv dword ptr [fpuTemp] ; st: [tickIn4096Clock / 4096 / 1193182 = clockPeriod]
     fstp [clockPeriod] ; st: []
     
-    .while 1 ; game cycle
-        ; cover image
-        push ds
-        mov ax, coverImage
-        mov ds, ax
-        lea si, image
-        mov ax, 0a000h
-        mov es, ax
-        mov di, imageTop * 320 + imageLeft
-        mov cx, imageHeight
-        @@:
-            push cx
-            mov cx, imageWidth
-            rep movsb
-            add di, 320 - imageWidth
-            pop cx
-            loop @b
-        pop ds
-        
-        printStringWithAttribute enterToStartMessage, 28h, lengthof enterToStartMessage, 2, 17
-        printStringWithAttribute hForHelpMessage, 37h, lengthof hForHelpMessage, 4, 19
-        
-        
-        .while 1 ; wait user input
-            mov ah, 00h
-            int 16h
-            .if al == 1bh ; esc
-                call exitGame
-            .elseif al == 'h' || al == 'H'
-                call helpPage
-                .break
-            .elseif al == 0dh ; enter
-                call gameStart
-                .break
-            .endif
-        .endw
-    .endw
-main endp
+    ret
+getCPUClockPeriod endp
 
 gameStart proc
     finit
@@ -287,60 +268,7 @@ gameStart proc
     mov [redBall.score], 0
     mov [blueBall.score], 0
     
-    ; generate random wall
-    mov [wallEffect + 0 * 2], increaseScore ; at least one increase score
-    mov [wallColor + 0 * 1], 2fh ; green
-    mov esi, 1
-    .while esi != 26
-        ;  increaseScore: 15% = ~ 644245094
-        ; increase3Score: 2% = ~ 730144440
-        ;  decreaseScore: 5% = ~ 944892805
-        ;      swapBalls: 2% = ~ 1030792151
-        ;      extraTurn: 2% = ~ 1116691497
-        ;       noEffect: remain% ~ 4294967295
-        nextRandomNumber
-        .if [randomNumber] <= 644245094
-            mov [wallEffect + esi * 2], increaseScore
-            mov byte ptr [wallColor + esi * 1], 2fh ; green
-        .elseif [randomNumber] <= 730144440
-            mov [wallEffect + esi * 2], increase3Score
-            mov byte ptr [wallColor + esi * 1], 34h ; aqua
-        .elseif [randomNumber] <= 944892805
-            mov [wallEffect + esi * 2], decreaseScore
-            mov byte ptr [wallColor + esi * 1], 28h ; red
-        .elseif [randomNumber] <= 1030792151
-            mov [wallEffect + esi * 2], swapBalls
-            mov byte ptr [wallColor + esi * 1], 22h ; purple
-        .elseif [randomNumber] <= 1116691497
-            mov [wallEffect + esi * 2], extraTurn
-            mov byte ptr [wallColor + esi * 1], 2ch ; yellow
-        .else
-            mov [wallEffect + esi * 2], noEffect
-            mov byte ptr [wallColor + esi * 1], 0fh ; white
-        .endif
-        
-        inc esi
-    .endw
-    ; shuffle wall
-    ; https://en.wikipedia.org/wiki/Fisher%E2%80%93Yates_shuffle#The_modern_algorithm
-    mov bl, lengthof wallEffect ; 26, divisor
-    mov ecx, lengthof wallEffect - 1 ; 25
-    @@:
-        nextRandomNumber
-        xor ah, ah ; avoid division overflow
-        div bl ; random / bl = al ... ah, 0 <= ah <= cx
-        movzx edi, ah
-        ; exchange wallEffect[ecx], wallEffect[edi]
-        mov ax, [wallEffect + ecx * 2]
-        xchg ax, [wallEffect + edi * 2]
-        mov [wallEffect + ecx * 2], ax
-        ; exchange wallColor[ecx], wallColor[edi]
-        mov al, [wallColor + ecx * 1]
-        xchg al, [wallColor + edi * 1]
-        mov [wallColor + ecx * 1], al
-        
-        dec bl
-        loop @b
+    call generateWall
     
     mov ax, 03h
     int 33h
@@ -385,37 +313,7 @@ gameStart proc
         invoke step, addr blueBall
         fstp st ; st: []
         
-        ; shoot if click
-        mov ax, 03h
-        int 33h
-        shr cx, 1 ; X max: 640 -> 320
-        ; wait for negative edge
-        test [mouseButtonStatus], 001b
-        jz @f ; not pressed
-        test bl, 001b
-        jnz @f ; pressed but not released
-        test [gameStatus], 00000001b
-        jnz @f ; round not over yet
-            .if [gameStatus] & 00000010b
-                lea si, [blueBall]
-            .else
-                lea si, [redBall]
-            .endif
-            assume si: near ptr circle
-            or [gameStatus], 00000001b ; new round start
-            mov word ptr [fpuTemp], cx
-            fild word ptr [fpuTemp] ; st: [mouseX]
-            fsub [si].x ; st: [mouseX - x1]
-            fadd st, st ; st: [(mouseX - x1) * 2]
-            fstp [si].vx ; st: []
-            mov word ptr [fpuTemp], dx
-            fild word ptr [fpuTemp] ; st: [mouseY]
-            fsub [si].y ; st: [mouseY - y1]
-            fadd st, st ; st: [(mouseY - y1) * 2]
-            fstp [si].vy ; st: []
-            assume si: nothing
-        @@:
-        mov [mouseButtonStatus], bl
+        call clickHandler
 
         ; wall collision
         fld [heightMinusRadius] ; st: [h - r]
@@ -427,57 +325,7 @@ gameStart proc
         fstp st ; st: [h - r]
         fstp st ; st: []
         
-        ; ball collision
-        ; n = (s1 - s2) / |n| = (nx, ny), unit normal vector
-        ; t = (tx, ty) = (-ny, nx), unit tangent vector
-        ; |n|^2 <= (2 * r)^2: collision occur
-        ; /nx tx\   /nx -ny\ , NT coordinate => XY coordinate
-        ; \ny ty/ = \ny  nx/ , orthonormal basis
-        ; /nx -ny\-1  /nx -ny\T  / nx ny\ , XY coordinate => NT coordinate
-        ; \ny  nx/  = \ny  nx/ = \-ny nx/
-        fld [redBall.y] ; st: [y1]
-        fsub [blueBall.y] ; st: [y1 - y2 = dy]
-        fld [redBall.x] ; st: [x1][dy]
-        fsub [blueBall.x] ; st: [x1 - x2 = dx][dy]
-        fld st(1) ; st: [dy][dx][dy]
-        fmul st, st ; st: [dy^2][dx][dy]
-        fld st(1) ; st: [dx][dy^2][dx][dy]
-        fmul st, st ; st: [dx^2][dy^2][dx][dy]
-        fadd ; st: [dx^2 + dy^2 = |n|^2][dx][dy]
-        fld [circleRadius] ; st: [r][|n|^2][dx][dy]
-        fadd st, st ; st: [2 * r][|n|^2][dx][dy]
-        fmul st, st ; st: [(2 * r)^2][|n|^2][dx][dy]
-        fcomip_ 1 ; st: [|n|^2][dx][dy]
-        jb @f ; (2 * r)^2 < |n|^2: no collision
-            fsqrt ; st: [|n|][dx][dy]
-            fdiv st(2), st ; st: [|n|][dx][dy / |n| = ny]
-            fdivp st(1), st ; st: [dx / |n| = nx][ny]
-            fld st(1) ; st: [ny][nx][ny]
-            fchs ; st: [-ny][nx][ny]
-            fld [redBall.vy] ; st: [v1y][-ny][nx][ny]
-            fld [redBall.vx] ; st: [v1x][v1y][-ny][nx][ny]
-            ; / nx ny\ /v1x\ = /v1n\
-            ; \-ny nx/ \v1y/   \v1t/
-            matrix_x_vector 3, 2, 4, 3, 0, 1 ; st: [v1n][v1t][-ny][nx][ny]
-            fstp [fpuTemp] ; st: [v1t][-ny][nx][ny]
-            fld [blueBall.vy] ; st: [v2y][v1t][-ny][nx][ny]
-            fld [blueBall.vx] ; st: [v2x][v2y][v1t][-ny][nx][ny]
-            ; / nx ny\ /v2x\ = /v2n\
-            ; \-ny nx/ \v2y/   \v2t/
-            matrix_x_vector 4, 3, 5, 4, 0, 1 ; st: [v2n][v2t][v1t][-ny][nx][ny]
-            ; /nx -ny\ /v2n\ = v1': v1 after collision
-            ; \ny  nx/ \v1t/
-            matrix_x_vector 4, 5, 3, 4, 0, 2 ; st: [v1x'][v2t][v1y'][-ny][nx][ny]
-            fstp [redBall.vx] ; st: [v2t][v1y'][-ny][nx][ny]
-            fld [fpuTemp] ; st: [v1n][v2t][v1y'][-ny][nx][ny]
-            ; /nx -ny\ /v1n\ = v2': v2 after collision
-            ; \ny  nx/ \v2t/
-            matrix_x_vector 4, 5, 3, 4, 0, 1 ; st: [v2x'][v2y'][v1y'][-ny][nx][ny]
-            fstp [blueBall.vx] ; st: [v2y'][v1y'][-ny][nx][ny]
-            fstp [blueBall.vy] ; st: [v1y'][-ny][nx][ny]
-            fstp [redBall.vy] ; st: [-ny][nx][ny]
-        @@:
-        finit ; st: []
+        call ballCollsion
 
         ; round not over yet && all velocity == 0: end of round
         mov eax, 7fffffffh ; 01111...111b, float has +0 and -0
@@ -495,64 +343,7 @@ gameStart proc
         invoke printScore, [redball.score], 28h, 19, 1
         invoke printScore, [blueBall.score], 37h, 19, 23
         
-        ; draw to backbuffer
-        mov ax, backBuffer
-        mov es, ax
-        ; draw line
-        mov ax, 03h
-        int 33h
-        shr cx, 1
-        mov si, [dashedlineFlow]
-        dec [dashedlineFlow]
-        and [dashedlineFlow], 0111b ; cycle from 0 to 7
-        .if !([gameStatus] & 00000001b) ; if round not start yet
-            .if [gameStatus] & 00000010b ; if player2's turn
-                invoke drawLine, [blueBall.integerX], [blueBall.integerY], cx, dx
-            .else
-                invoke drawLine, [redBall.integerX], [redBall.integerY], cx, dx
-            .endif
-        .endif
-        invoke drawCircle, [redBall.integerX], [redBall.integerY], 28h
-        invoke drawCircle, [blueBall.integerX], [blueBall.integerY], 37h
-        ; draw wall
-        lea si, wallColor
-        xor di, di
-        .repeat
-            mov al, [si]
-            mov cx, 40
-            rep stosb
-            inc si
-        .until si == offset [wallColor + 8]
-        dec di
-        .repeat
-            mov al, [si]
-            mov cx, 40
-            @@:
-                stosb
-                add di, 320 - 1 ; width - stosb increment
-                loop @b
-            inc si
-        .until si == offset [wallColor + 8 + 5]
-        sub di, 320
-        std
-        .repeat
-            mov al, [si]
-            mov cx, 40
-            rep stosb
-            inc si
-        .until si == offset [wallColor + 8 + 5 + 8]
-        inc di
-        .repeat
-            mov al, [si]
-            mov cx, 40
-            @@:
-                stosb
-                add di, -(320 - 1) ; width - stosb increment
-                loop @b
-            inc si
-        .until si == offset [wallColor + 8 + 5 + 8 + 5]
-        cld
-        
+        call draw
         
         ; VSync
         ; https://stackoverflow.com/questions/67066755/assembly-x86-16-bit-vsync-screen-tearing
@@ -626,48 +417,63 @@ gameStart proc
         
     ret
 gameStart endp
-helpPage proc
-    ; clear screen
-    mov ax, 0a000h
-    mov es, ax
-    xor eax, eax
-    xor di, di
-    mov cx, (320 * 200) / 4
-    rep stosd
-    
-    moveTextCursor 1, 1
-    printString [gameIntroduction]
-    
-    invoke drawRectangle, 2 * 8, 12 * 8, 8, 8, 0fh ; white
-    moveTextCursor 4, 12
-    printString [normalWallMessage]
-    invoke drawRectangle, 2 * 8, 14 * 8, 8, 8, 2fh ; green
-    moveTextCursor 4, 14
-    printString [increaseScoreMessage]
-    invoke drawRectangle, 2 * 8, 16 * 8, 8, 8, 34h ; aqua
-    moveTextCursor 4, 16
-    printString [increase3ScoreMessage]
-    invoke drawRectangle, 2 * 8, 18 * 8, 8, 8, 28h ; red
-    moveTextCursor 4, 18
-    printString [decreaseScoreMessage]
-    invoke drawRectangle, 2 * 8, 20 * 8, 8, 8, 22h ; purple
-    moveTextCursor 4, 20
-    printString [swapBallsMessage]
-    invoke drawRectangle, 20 * 8, 12 * 8, 8, 8, 2ch ; yellow
-    moveTextCursor 22, 12
-    printString [extraTurnMessage]
-    
-    mov ah, 00h
-    int 16h
+generateWall proc
+    mov [wallEffect + 0 * 2], increaseScore ; at least one increase score
+    mov [wallColor + 0 * 1], 2fh ; green
+    mov esi, 1
+    .while esi != 26
+        ;  increaseScore: 15% = ~ 644245094
+        ; increase3Score: 2% = ~ 730144440
+        ;  decreaseScore: 5% = ~ 944892805
+        ;      swapBalls: 2% = ~ 1030792151
+        ;      extraTurn: 2% = ~ 1116691497
+        ;       noEffect: remain% ~ 4294967295
+        nextRandomNumber
+        .if [randomNumber] <= 644245094
+            mov [wallEffect + esi * 2], increaseScore
+            mov byte ptr [wallColor + esi * 1], 2fh ; green
+        .elseif [randomNumber] <= 730144440
+            mov [wallEffect + esi * 2], increase3Score
+            mov byte ptr [wallColor + esi * 1], 34h ; aqua
+        .elseif [randomNumber] <= 944892805
+            mov [wallEffect + esi * 2], decreaseScore
+            mov byte ptr [wallColor + esi * 1], 28h ; red
+        .elseif [randomNumber] <= 1030792151
+            mov [wallEffect + esi * 2], swapBalls
+            mov byte ptr [wallColor + esi * 1], 22h ; purple
+        .elseif [randomNumber] <= 1116691497
+            mov [wallEffect + esi * 2], extraTurn
+            mov byte ptr [wallColor + esi * 1], 2ch ; yellow
+        .else
+            mov [wallEffect + esi * 2], noEffect
+            mov byte ptr [wallColor + esi * 1], 0fh ; white
+        .endif
+        
+        inc esi
+    .endw
+    ; shuffle wall
+    ; https://en.wikipedia.org/wiki/Fisher%E2%80%93Yates_shuffle#The_modern_algorithm
+    mov bl, lengthof wallEffect ; 26, divisor
+    mov ecx, lengthof wallEffect - 1 ; 25
+    @@:
+        nextRandomNumber
+        xor ah, ah ; avoid division overflow
+        div bl ; random / bl = al ... ah, 0 <= ah <= cx
+        movzx edi, ah
+        ; exchange wallEffect[ecx], wallEffect[edi]
+        mov ax, [wallEffect + ecx * 2]
+        xchg ax, [wallEffect + edi * 2]
+        mov [wallEffect + ecx * 2], ax
+        ; exchange wallColor[ecx], wallColor[edi]
+        mov al, [wallColor + ecx * 1]
+        xchg al, [wallColor + edi * 1]
+        mov [wallColor + ecx * 1], al
+        
+        dec bl
+        loop @b
     
     ret
-helpPage endp
-exitGame proc
-    mov ax, 03h
-    int 10h
-    .exit
-exitGame endp
-
+generateWall endp
 step proc, pBall: near ptr circle ; st: [dt]
     mov si, [pBall]
     assume si: near ptr circle
@@ -717,6 +523,40 @@ step proc, pBall: near ptr circle ; st: [dt]
     assume si: nothing
     ret
 step endp
+clickHandler proc
+    mov ax, 03h
+    int 33h
+    shr cx, 1 ; X max: 640 -> 320
+    ; wait for negative edge
+    test [mouseButtonStatus], 001b
+    jz @f ; not pressed
+    test bl, 001b
+    jnz @f ; pressed but not released
+    test [gameStatus], 00000001b
+    jnz @f ; round not over yet
+        .if [gameStatus] & 00000010b
+            lea si, [blueBall]
+        .else
+            lea si, [redBall]
+        .endif
+        assume si: near ptr circle
+        or [gameStatus], 00000001b ; new round start
+        mov word ptr [fpuTemp], cx
+        fild word ptr [fpuTemp] ; st: [mouseX]
+        fsub [si].x ; st: [mouseX - x1]
+        fadd st, st ; st: [(mouseX - x1) * 2]
+        fstp [si].vx ; st: []
+        mov word ptr [fpuTemp], dx
+        fild word ptr [fpuTemp] ; st: [mouseY]
+        fsub [si].y ; st: [mouseY - y1]
+        fadd st, st ; st: [(mouseY - y1) * 2]
+        fstp [si].vy ; st: []
+        assume si: nothing
+    @@:
+    mov [mouseButtonStatus], bl
+    
+    ret
+clickHandler endp
 wallCollision proc, pBall: near ptr circle ; st: [radius][width- radius][height - radius]
     ; 40 pixels per section
     ; 
@@ -858,28 +698,159 @@ wallCollision proc, pBall: near ptr circle ; st: [radius][width- radius][height 
         assume si: nothing
         ret
 wallCollision endp
-drawRectangle proc, left: word, top: word, squareWidth: word, height: word, color: byte
-    mov ax, 320
-    mul top
-    add ax, left
-    mov di, ax
-    mov bx, 320
-    sub bx, squareWidth
-    mov al, color
-    mov cx, height
+ballCollsion proc
+    ; n = (s1 - s2) / |n| = (nx, ny), unit normal vector
+    ; t = (tx, ty) = (-ny, nx), unit tangent vector
+    ; |n|^2 <= (2 * r)^2: collision occur
+    ; /nx tx\   /nx -ny\ , NT coordinate => XY coordinate
+    ; \ny ty/ = \ny  nx/ , orthonormal basis
+    ; /nx -ny\-1  /nx -ny\T  / nx ny\ , XY coordinate => NT coordinate
+    ; \ny  nx/  = \ny  nx/ = \-ny nx/
+    fld [redBall.y] ; st: [y1]
+    fsub [blueBall.y] ; st: [y1 - y2 = dy]
+    fld [redBall.x] ; st: [x1][dy]
+    fsub [blueBall.x] ; st: [x1 - x2 = dx][dy]
+    fld st(1) ; st: [dy][dx][dy]
+    fmul st, st ; st: [dy^2][dx][dy]
+    fld st(1) ; st: [dx][dy^2][dx][dy]
+    fmul st, st ; st: [dx^2][dy^2][dx][dy]
+    fadd ; st: [dx^2 + dy^2 = |n|^2][dx][dy]
+    fld [circleRadius] ; st: [r][|n|^2][dx][dy]
+    fadd st, st ; st: [2 * r][|n|^2][dx][dy]
+    fmul st, st ; st: [(2 * r)^2][|n|^2][dx][dy]
+    fcomip_ 1 ; st: [|n|^2][dx][dy]
+    jb @f ; (2 * r)^2 < |n|^2: no collision
+        fsqrt ; st: [|n|][dx][dy]
+        fdiv st(2), st ; st: [|n|][dx][dy / |n| = ny]
+        fdivp st(1), st ; st: [dx / |n| = nx][ny]
+        fld st(1) ; st: [ny][nx][ny]
+        fchs ; st: [-ny][nx][ny]
+        fld [redBall.vy] ; st: [v1y][-ny][nx][ny]
+        fld [redBall.vx] ; st: [v1x][v1y][-ny][nx][ny]
+        ; / nx ny\ /v1x\ = /v1n\
+        ; \-ny nx/ \v1y/   \v1t/
+        matrix_x_vector 3, 2, 4, 3, 0, 1 ; st: [v1n][v1t][-ny][nx][ny]
+        fstp [fpuTemp] ; st: [v1t][-ny][nx][ny]
+        fld [blueBall.vy] ; st: [v2y][v1t][-ny][nx][ny]
+        fld [blueBall.vx] ; st: [v2x][v2y][v1t][-ny][nx][ny]
+        ; / nx ny\ /v2x\ = /v2n\
+        ; \-ny nx/ \v2y/   \v2t/
+        matrix_x_vector 4, 3, 5, 4, 0, 1 ; st: [v2n][v2t][v1t][-ny][nx][ny]
+        ; /nx -ny\ /v2n\ = v1': v1 after collision
+        ; \ny  nx/ \v1t/
+        matrix_x_vector 4, 5, 3, 4, 0, 2 ; st: [v1x'][v2t][v1y'][-ny][nx][ny]
+        fstp [redBall.vx] ; st: [v2t][v1y'][-ny][nx][ny]
+        fld [fpuTemp] ; st: [v1n][v2t][v1y'][-ny][nx][ny]
+        ; /nx -ny\ /v1n\ = v2': v2 after collision
+        ; \ny  nx/ \v2t/
+        matrix_x_vector 4, 5, 3, 4, 0, 1 ; st: [v2x'][v2y'][v1y'][-ny][nx][ny]
+        fstp [blueBall.vx] ; st: [v2y'][v1y'][-ny][nx][ny]
+        fstp [blueBall.vy] ; st: [v1y'][-ny][nx][ny]
+        fstp [redBall.vy] ; st: [-ny][nx][ny]
     @@:
-        push cx
-        mov cx, squareWidth
-        rep stosb
-        add di, bx
-        pop cx
-        loop @b
+    finit ; st: []
+    
     ret
-drawRectangle endp
+ballCollsion endp
+printScore proc, score: byte, color: byte, x: byte, y: byte
+    moveTextCursor x, y
+    mov ah, 0eh
+    xor bh, bh
+    mov bl, color
+    .if sbyte ptr [score] < 0
+        neg [score]
+        mov al, '-'
+        int 10h
+    .elseif sbyte ptr [score] == 0
+        mov al, '0'
+        int 10h
+        ret
+    .endif
+    
+    mov al, [score]
+    xor ecx, ecx
+    mov dl, 10
+    .repeat
+        xor ah, ah
+        div dl
+        or ah, 30h
+        push ax
+        inc ecx
+    .until al == 0
+    
+    mov ah, 0eh
+    @@:
+        pop dx
+        mov al, dh
+        int 10h
+        loop @b
+    
+    ret
+printScore endp
+draw proc
+    mov ax, backBuffer
+    mov es, ax
+    ; draw line
+    mov ax, 03h
+    int 33h
+    shr cx, 1
+    mov si, [dashedlineFlow]
+    dec [dashedlineFlow]
+    and [dashedlineFlow], 0111b ; cycle from 0 to 7
+    .if !([gameStatus] & 00000001b) ; if round not start yet
+        .if [gameStatus] & 00000010b ; if player2's turn
+            invoke drawLine, [blueBall.integerX], [blueBall.integerY], cx, dx
+        .else
+            invoke drawLine, [redBall.integerX], [redBall.integerY], cx, dx
+        .endif
+    .endif
+    invoke drawCircle, [redBall.integerX], [redBall.integerY], 28h
+    invoke drawCircle, [blueBall.integerX], [blueBall.integerY], 37h
+    ; draw wall
+    lea si, wallColor
+    xor di, di
+    .repeat
+        mov al, [si]
+        mov cx, 40
+        rep stosb
+        inc si
+    .until si == offset [wallColor + 8]
+    dec di
+    .repeat
+        mov al, [si]
+        mov cx, 40
+        @@:
+            stosb
+            add di, 320 - 1 ; width - stosb increment
+            loop @b
+        inc si
+    .until si == offset [wallColor + 8 + 5]
+    sub di, 320
+    std
+    .repeat
+        mov al, [si]
+        mov cx, 40
+        rep stosb
+        inc si
+    .until si == offset [wallColor + 8 + 5 + 8]
+    inc di
+    .repeat
+        mov al, [si]
+        mov cx, 40
+        @@:
+            stosb
+            add di, -(320 - 1) ; width - stosb increment
+            loop @b
+        inc si
+    .until si == offset [wallColor + 8 + 5 + 8 + 5]
+    cld
+    
+    ret
+draw endp
 drawCircle proc, centerX: word, centerY: word, color: byte
     ; di = (centerY - circleRadius) * 320 + (centerX - circleWidth[0] >> 1)
     mov ax, [centerY]
-    sub ax, circlePixelRadius
+    sub ax, circleIntegerRadius
     mov bx, 320
     mul bx
     add ax, [centerX]
@@ -891,7 +862,7 @@ drawCircle proc, centerX: word, centerY: word, color: byte
     ; bx = si end = &circleWidth[0] + sizeof circleWidth
     lea si, [circleWidth]
     mov bx, si
-    add bx, (circlePixelRadius * 2 + 1) * 2 ; 2bytes * (2r + 1)
+    add bx, (circleIntegerRadius * 2 + 1) * 2 ; 2bytes * (2r + 1)
     
     mov al, [color]
     .while si != bx
@@ -971,41 +942,69 @@ drawLine proc, x0: word, y0: word, x1: word, y1: word ; si would be the flashing
     
     ret
 drawLine endp
-printScore proc, score: byte, color: byte, x: byte, y: byte
-    moveTextCursor x, y
-    mov ah, 0eh
-    xor bh, bh
-    mov bl, color
-    .if sbyte ptr [score] < 0
-        neg [score]
-        mov al, '-'
-        int 10h
-    .elseif sbyte ptr [score] == 0
-        mov al, '0'
-        int 10h
-        ret
-    .endif
+
+helpPage proc
+    ; clear screen
+    mov ax, 0a000h
+    mov es, ax
+    xor eax, eax
+    xor di, di
+    mov cx, (320 * 200) / 4
+    rep stosd
     
-    mov al, [score]
-    xor ecx, ecx
-    mov dl, 10
-    .repeat
-        xor ah, ah
-        div dl
-        or ah, 30h
-        push ax
-        inc ecx
-    .until al == 0
+    moveTextCursor 1, 1
+    printString [gameIntroduction]
     
-    mov ah, 0eh
-    @@:
-        pop dx
-        mov al, dh
-        int 10h
-        loop @b
+    invoke drawRectangle, 2 * 8, 12 * 8, 8, 8, 0fh ; white
+    moveTextCursor 4, 12
+    printString [normalWallMessage]
+    invoke drawRectangle, 2 * 8, 14 * 8, 8, 8, 2fh ; green
+    moveTextCursor 4, 14
+    printString [increaseScoreMessage]
+    invoke drawRectangle, 2 * 8, 16 * 8, 8, 8, 34h ; aqua
+    moveTextCursor 4, 16
+    printString [increase3ScoreMessage]
+    invoke drawRectangle, 2 * 8, 18 * 8, 8, 8, 28h ; red
+    moveTextCursor 4, 18
+    printString [decreaseScoreMessage]
+    invoke drawRectangle, 2 * 8, 20 * 8, 8, 8, 22h ; purple
+    moveTextCursor 4, 20
+    printString [swapBallsMessage]
+    invoke drawRectangle, 20 * 8, 12 * 8, 8, 8, 2ch ; yellow
+    moveTextCursor 22, 12
+    printString [extraTurnMessage]
+    
+    mov ah, 00h
+    int 16h
     
     ret
-printScore endp
+helpPage endp
+drawRectangle proc, left: word, top: word, squareWidth: word, height: word, color: byte
+    mov ax, 320
+    mul top
+    add ax, left
+    mov di, ax
+    mov bx, 320
+    sub bx, squareWidth
+    mov al, color
+    mov cx, height
+    @@:
+        push cx
+        mov cx, squareWidth
+        rep stosb
+        add di, bx
+        pop cx
+        loop @b
+    ret
+drawRectangle endp
+
+exitGame proc
+    mov ax, 03h
+    int 10h
+    .exit
+exitGame endp
+
+
 
 ; wall effect function
 noEffect proc
@@ -1057,2141 +1056,2139 @@ extraTurn endp
 .fardata coverImage
 imageWidth equ 320
 imageHeight equ 200
-imageLeft equ (320 - imageWidth) / 2 ; center
-imageTop equ (200 - imageHeight) / 2 ; center
 image \
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,21,25,28,29,30,31,28,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,17,24,31,31,31,31,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,21,30,31,31,31
-db 31,31,31,31,30,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,30,31,31,31,31,27,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,24,31,31,31,31,31,31,31,31,31,31,24,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,17,31,31,31,31,31,21,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,23,31,31,31,31,31,28,31,31,31,31,31,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,30,31,31,31,31,22,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,25,31,31,31,31,31,19,16
-db 28,31,31,31,31,25,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,30,31,31,31,31,23,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,21,31,31,31,31,31,25,16,16,23,31,31,31,31,31,17,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,25,31,31,31,31,24,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,21,31,31,31,31,31,23,16,16,17,31,31,31,31,31,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,31,31,31,31,26,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,27,27,21,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,17,17,17,17,17,17,17
-db 16,16,16,16,16,16,16,16,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,31,31,31,31,31,21,16,16
-db 18,31,31,31,31,21,16,16,16,16,16,21,25,28,28,23,16,16,16,16,16,25,31,31,31,30,19,16,16,16
-db 16,16,22,26,28,28,22,16,16,16,16,17,27,31,31,31,27,16,18,29,28,19,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,19,21,21,20,28,28,28,28,28,28,28,28,28,28,28,28,28,28,28,28,23,16
-db 17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,21,31,31,31,31,31,17,16,16,23,31,31,30,22,16,16,16,16,17
-db 26,31,31,31,31,31,31,17,16,16,16,28,31,31,31,29,17,16,16,16,18,27,31,31,31,31,31,25,16,16
-db 16,28,31,31,31,31,20,16,31,31,31,31,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,26
-db 27,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,28,19,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,26,31,31,31,31,31,24,16,16,19,21,19,16,16,16,16,16,18,30,31,31,31,31,31,30,29,17,16,16
-db 16,26,31,31,31,31,25,16,16,19,31,31,31,31,31,31,29,25,16,16,16,27,31,31,31,31,22,27,31,31
-db 31,31,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,25,25,25,28,29,29,29,30,30,30,31,31
-db 31,31,31,31,31,31,31,31,31,27,20,17,17,16,16,16,17,17,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,28,31,31,31,31,31,28,16,16
-db 16,16,16,16,16,16,16,16,25,31,31,31,31,30,19,16,16,16,16,16,16,26,31,31,31,31,23,16,16,29
-db 31,31,31,31,28,18,16,16,16,16,16,21,31,31,31,31,31,31,31,31,31,31,21,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,21,21,19,20,20,20,19,22,29,28,27,30,31,31,31,31,30,30,31,31,31,31,27
-db 26,27,27,27,27,27,27,27,27,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,28,31,31,31,31,31,16,16,16,16,16,16,16,16,16,16,16,27,31
-db 31,31,31,18,16,22,29,30,27,16,16,26,31,31,31,31,22,16,17,31,31,31,31,30,16,16,24,30,29,25
-db 16,17,31,31,31,31,31,31,31,31,31,31,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,21,19
-db 20,19,19,19,22,28,27,26,29,31,30,30,28,28,27,29,31,31,31,31,31,31,30,30,30,30,30,30,30,31
-db 21,18,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,27,31,31,31,31,31,21,16,16,16,16,16,16,16,16,16,17,31,31,31,31,23,16,24,31,31,31,31,16
-db 16,25,31,31,31,31,21,16,23,31,31,31,31,17,16,26,31,31,31,31,16,19,31,31,31,31,31,31,27,22
-db 25,30,18,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,21,19,20,20,20,19,22,28,23,20,21,21
-db 21,21,26,27,26,28,31,31,31,31,31,31,31,31,31,31,31,31,31,31,28,20,18,17,17,17,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,27,31,31,31,31,31,26,16,16
-db 16,16,16,16,16,16,16,25,31,31,31,31,16,16,31,31,31,31,31,23,16,26,31,31,31,31,20,16,30,31
-db 31,31,25,16,18,31,31,31,31,31,19,19,31,31,31,31,31,21,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,22,21,19,20,20,20,19,22,28,22,19,19,19,19,19,25,21,21,21,22,21,21,26
-db 27,28,28,30,31,31,31,31,31,31,30,30,30,30,30,29,17,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,22,31,31,31,31,31,24,16,16,16,16,16,16,16,16,16,30,31,31
-db 31,29,16,16,21,31,31,31,31,30,16,30,31,31,31,31,19,17,31,31,31,31,24,16,16,23,31,31,31,31
-db 27,17,31,31,31,31,24,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,21,19
-db 20,20,20,19,22,28,22,19,20,20,20,20,25,18,19,19,19,19,18,24,26,27,28,30,31,31,31,31,31,31
-db 31,31,31,31,31,30,19,17,17,18,17,19,19,20,20,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,30,31,31,31,31,24,16,16,16,16,20,21,16,16,17,31,31,31,31,29,16,16,23,31,31,31,31,27
-db 16,30,31,31,31,31,19,19,31,31,31,31,22,16,16,25,31,31,31,31,24,17,31,31,31,31,26,17,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,21,19,20,20,20,19,22,28,22,19,20,20
-db 20,20,25,19,20,20,20,20,19,25,27,23,23,24,24,24,24,24,24,27,29,29,29,31,31,31,30,30,29,29
-db 29,29,29,29,29,28,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,24,31,31,31,31,31,23,16,16
-db 16,16,28,31,25,16,16,31,31,31,31,31,20,16,26,31,31,31,31,19,16,31,31,31,31,31,20,18,31,31
-db 31,31,28,17,16,28,31,31,31,31,17,16,31,31,31,31,31,21,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,21,21,19,20,20,20,19,22,28,22,19,20,20,20,20,25,19,20,20,20,20,19,25
-db 28,20,19,19,19,19,19,19,19,23,28,27,27,31,31,31,31,31,31,31,31,31,31,31,31,30,22,16,17,17
-db 16,16,16,17,17,17,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,28,31,31,31,31,31,26,16,16,16,17,31,31,31,24,16,30,31,31
-db 31,31,28,16,18,31,31,31,31,27,16,21,31,31,31,31,21,18,31,31,31,31,31,21,16,20,31,31,31,31
-db 23,17,31,31,31,31,31,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,21,21,19
-db 20,20,20,19,22,28,22,19,20,20,20,20,25,19,20,20,20,20,19,25,27,21,19,20,20,20,20,20,19,24
-db 25,23,24,26,26,26,27,29,29,29,31,31,31,31,31,30,22,26,25,29,29,29,29,29,29,29,22,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,19,31,31,31,31,31,31,23,16,16,30,31,31,31,31,18,26,31,31,31,31,22,16,18,31,31,31,31,25
-db 16,22,31,31,31,31,24,16,31,31,31,31,31,17,16,19,31,31,31,31,20,18,31,31,31,31,31,18,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,21,21,19,20,20,20,19,23,28,22,19,20,20
-db 20,20,25,19,20,20,20,20,19,24,27,21,19,20,20,20,20,20,20,25,22,19,20,19,19,19,22,27,27,28
-db 31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,30,19,17,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,29,31,31,31,31,31,31,26
-db 29,31,31,31,31,31,17,24,31,31,31,31,27,16,21,31,31,31,31,21,16,28,31,31,31,31,21,16,31,31
-db 31,31,31,21,16,24,31,31,31,31,17,17,31,31,31,31,31,19,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,21,21,19,20,20,20,19,22,28,22,19,20,20,20,20,25,19,20,20,20,20,19,24
-db 27,21,19,20,20,20,20,20,20,25,22,19,20,20,20,19,23,26,23,25,27,27,27,29,29,29,30,31,31,31
-db 31,31,31,31,31,31,30,28,28,18,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,20,31,31,31,31,31,31,31,31,31,31,31,31,23,16,18,23,31
-db 31,31,31,26,30,31,31,31,31,17,16,21,31,31,31,31,19,16,20,23,31,31,31,31,26,31,31,31,31,30
-db 16,16,29,31,31,31,31,18,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,20,18
-db 19,19,19,18,22,28,22,19,20,20,20,20,25,19,20,20,20,20,19,24,27,21,19,20,20,20,20,20,20,25
-db 22,19,20,20,20,20,24,24,17,18,18,18,17,25,25,26,27,31,31,31,31,31,31,31,31,31,31,31,31,29
-db 19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,26,31,31,31,31,31,31,31,31,31,31,27,16,16,16,19,31,31,31,31,31,31,31,31,31,19,16
-db 16,28,31,31,31,31,29,16,16,21,31,31,31,31,31,31,31,31,31,18,16,19,31,31,31,31,31,19,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,21,21,19,20,20,20,20,22,27,22,19,20,20
-db 20,20,25,19,20,20,20,20,19,24,27,21,19,20,20,20,20,20,20,25,22,19,20,20,20,20,24,24,18,20
-db 20,20,19,26,26,26,27,30,29,29,29,30,30,30,30,30,30,30,30,29,27,18,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,24,31,31,31,31,31
-db 30,25,28,25,16,16,16,16,19,27,31,31,31,31,31,30,29,21,16,16,17,31,31,31,31,31,31,21,16,21
-db 30,31,31,31,31,31,30,26,18,16,16,22,31,31,31,31,31,23,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,21,27,27,27,27,27,27,26,22,19,19,19,19,20,25,19,20,20,20,20,19,24
-db 27,21,19,20,20,20,20,20,20,25,22,19,20,20,20,20,24,24,18,20,20,20,20,26,24,20,20,20,20,20
-db 20,28,28,26,27,27,27,27,26,28,31,31,20,18,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,23,26,27,25,22,19,22,18,16,16,16,16,16,18
-db 30,31,31,31,25,16,16,16,16,16,17,26,30,31,31,31,22,17,16,16,16,25,29,31,31,24,16,16,16,16
-db 16,23,31,31,31,31,29,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,19,28
-db 29,29,29,29,28,26,22,19,19,19,19,19,25,19,20,20,20,20,19,24,27,20,19,19,19,19,19,19,19,25
-db 22,19,20,20,20,20,24,24,18,20,20,20,20,26,23,19,19,19,19,19,19,28,28,26,27,27,27,27,26,28
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,18,25,28,29,31,31,31,31,21,16,16,17,25,31,31,31,31,21,16,16,16,16,16,16
-db 16,16,16,21,21,17,16,16,16,16,16,16,16,17,17,16,16,16,16,16,16,25,31,31,31,31,28,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,20,22,21,22,21,22,21,23,27,25,25,25,25
-db 25,22,25,19,19,19,19,19,19,24,27,20,19,19,19,19,19,19,19,25,22,19,20,20,20,20,23,24,18,20
-db 20,20,20,26,23,19,19,19,19,19,19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,25,31,31,31,31
-db 31,31,31,31,31,21,16,24,31,31,31,31,31,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,29,31,31,31,31,28,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,22,20,18,20,19,19,19,22,27,27,29,28,29,29,27,25,18,19,19,19,19,18,24
-db 27,26,26,26,26,26,26,27,26,27,21,19,20,20,20,20,23,24,19,20,20,20,20,26,24,20,19,19,20,19
-db 19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,29,31,31,31,31,31,31,31,31,31,31,22,16,22,31,31
-db 31,31,30,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,24,31,31,31,31,24,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,20,19
-db 20,20,20,19,22,28,24,22,22,22,22,23,26,24,24,25,25,25,24,26,26,29,30,30,30,30,30,30,29,28
-db 21,19,19,19,19,19,23,24,19,20,20,20,20,26,24,20,20,20,20,19,19,28,28,26,27,27,27,27,26,28
-db 31,31,27,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,18,30,31,31,31,31,27,19,29,31,31,31,31,18,16,20,31,31,31,31,31,17,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,21,31,31,31,31,21,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,21,19,20,20,20,19,22,28,22,18,19,19
-db 19,19,26,27,27,28,28,29,29,27,26,24,23,23,23,23,23,24,23,26,21,18,19,19,19,19,22,24,19,20
-db 20,20,20,26,24,20,20,20,20,19,19,28,28,26,27,27,27,27,26,28,31,31,27,20,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,30,31,31,31,31,29,16,16
-db 26,31,31,31,31,30,16,19,31,31,31,31,31,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,21,31,31,31,31,27,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,23,21,19,20,20,20,19,22,28,23,19,20,20,20,20,25,22,22,23,23,24,24,25
-db 27,20,19,19,19,19,19,19,19,24,25,24,24,24,24,24,25,24,19,20,20,20,20,26,24,20,20,20,20,19
-db 19,28,28,26,27,27,27,27,26,28,31,31,27,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,23,31,31,31,31,31,24,16,16,20,31,31,31,31,31,16,16,27,31
-db 31,31,31,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,20,31,31,31,31,24,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,23,21,19
-db 20,20,20,19,22,28,23,19,20,20,20,20,25,19,20,19,19,19,19,24,27,21,19,20,20,20,20,20,19,23
-db 29,31,31,31,31,31,29,23,18,19,19,19,19,26,24,20,20,20,20,20,19,27,28,26,27,27,27,27,26,28
-db 31,31,27,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,19,31,31,31,31,31,23,16,16,17,31,31,31,31,29,16,16,26,31,31,31,31,18,16,16,16,16,16,17
-db 20,23,20,16,16,16,16,16,16,16,16,16,16,21,24,26,26,23,16,16,16,24,31,31,31,31,21,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,23,21,19,20,20,20,19,22,28,23,19,20,20
-db 20,20,25,19,20,20,20,20,19,24,27,21,19,20,20,20,20,20,19,24,26,27,27,27,27,27,26,25,22,22
-db 22,22,23,26,24,20,20,20,20,20,19,28,27,25,26,26,26,26,25,28,31,31,27,20,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,19,31,31,31,31,31,19,16,16
-db 21,31,31,31,29,17,16,18,31,31,31,31,24,16,16,16,16,23,27,31,31,31,31,26,23,18,16,16,16,16
-db 16,21,27,31,31,31,31,31,23,16,16,25,31,31,31,31,18,16,25,28,28,25,19,16,16,16,21,29,30,22
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,16,16
-db 16,16,16,16,16,16,16,24,21,19,20,20,20,19,22,28,23,19,20,20,20,20,25,19,20,20,20,20,19,24
-db 27,21,19,20,20,20,20,20,19,25,22,19,20,20,20,20,22,28,30,30,30,30,30,27,24,19,19,19,19,19
-db 18,28,25,21,23,23,23,23,22,26,31,31,27,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,24,31,31,31,31,31,17,16,16,24,30,29,25,16,16,16,18,31,31
-db 31,31,26,16,16,16,22,31,31,31,31,31,31,31,31,31,22,16,16,21,29,31,31,31,31,31,31,31,31,17
-db 16,22,31,31,31,31,16,23,31,31,31,31,31,18,16,21,31,31,31,31,17,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,17,27,27,27,27,27,17,17,17,18,27,27,27,27,27,27,27,27,27,17,17,24,21,19
-db 20,20,20,19,22,28,23,19,20,20,20,20,25,19,20,20,20,20,19,24,27,21,19,20,20,20,20,20,19,25
-db 22,19,20,20,20,20,22,27,26,26,26,26,27,27,24,20,20,20,20,20,19,28,26,22,24,24,24,24,22,26
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,27,31,31,31,31,31,28,16,16,16,16,16,16,16,16,16,17,31,31,31,31,31,18,16,17,31,31,31,31
-db 31,31,31,31,31,31,31,17,16,31,31,31,31,31,31,30,28,31,31,18,16,20,31,31,31,31,25,30,31,31
-db 31,31,31,30,16,25,31,31,31,31,26,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,19,26,26,26,26
-db 26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,27,21,19,19,19,19,19,22,28,23,19,20,20
-db 20,20,25,19,20,20,20,20,19,24,27,21,20,20,20,20,20,20,19,25,22,19,20,20,20,20,23,24,19,20
-db 20,20,20,26,26,28,27,27,27,27,26,29,30,29,29,29,29,29,29,30,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,28,31,31,31,31,31,24,16,16
-db 16,16,16,16,16,16,16,17,31,31,31,31,31,17,16,17,30,26,19,18,20,24,31,31,31,31,30,16,19,31
-db 31,31,31,31,23,16,16,20,21,16,16,20,31,31,31,31,31,31,31,31,31,31,31,31,16,25,31,31,31,31
-db 24,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,19,27,26,26,26,26,26,26,26,26,26,26,26,26,26,26
-db 26,26,26,26,26,26,25,26,21,19,19,19,19,19,22,28,23,19,20,20,20,20,25,19,20,20,20,20,19,24
-db 27,21,20,20,20,20,20,20,19,25,22,19,20,20,20,20,23,24,18,20,20,20,20,26,26,28,28,28,28,28
-db 27,29,31,31,31,31,31,31,31,31,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,28,31,31,31,31,30,16,16,16,16,16,16,16,16,16,16,17,31,31
-db 31,31,30,16,16,16,16,16,16,16,16,16,27,31,31,31,27,16,24,31,31,31,31,19,16,16,16,16,16,16
-db 16,21,31,31,31,31,31,31,25,27,31,31,31,31,16,17,28,31,31,23,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,18,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,25,25,23,25
-db 26,26,26,26,26,27,22,19,19,19,19,19,25,19,20,20,20,20,19,24,27,21,20,20,20,20,20,20,19,25
-db 22,19,20,20,20,20,23,24,19,20,20,20,20,26,24,21,21,21,21,21,20,27,29,26,26,26,26,26,26,28
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,27,31,31,31,31,31,24,16,16,16,16,16,16,16,16,16,16,31,31,31,31,29,16,16,16,16,16,23,27
-db 28,27,29,31,31,31,30,16,26,31,31,31,31,24,28,30,28,23,16,16,16,23,31,31,31,31,31,22,16,27
-db 31,31,31,31,18,16,16,19,18,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,23,26,26,26,26
-db 26,26,26,26,26,26,26,26,26,26,26,26,26,27,27,27,27,27,23,27,29,29,29,29,28,27,22,17,18,18
-db 18,19,25,19,20,20,20,20,19,24,27,21,20,20,20,20,20,20,19,25,22,19,20,20,20,20,23,24,19,20
-db 20,20,20,26,23,19,19,19,19,19,18,27,28,26,26,26,26,26,25,27,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,27,31,31,31,31,31,25,16,16
-db 16,16,16,16,16,16,16,19,31,31,31,31,30,16,16,16,21,29,31,31,31,31,31,31,31,31,30,16,28,31
-db 31,31,31,31,31,31,31,31,26,16,16,19,31,31,31,31,29,16,23,31,31,31,31,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,19,19,19,19,19,19,19,20,20,20,20,20,27,27
-db 27,27,27,27,27,27,27,28,21,21,23,23,23,23,24,27,25,25,25,25,25,26,25,19,20,20,20,20,19,24
-db 27,21,20,20,20,20,20,20,20,25,22,19,20,20,20,20,23,24,19,20,20,20,20,26,23,19,20,20,20,20
-db 19,27,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,18,30,31,31,31,31,25,16,16,16,16,16,16,16,16,16,23,31,31
-db 31,31,30,16,16,24,31,31,31,31,31,30,31,31,31,31,27,16,25,31,31,31,31,31,31,31,31,31,31,24
-db 16,16,29,31,31,31,25,16,22,31,31,31,31,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,23,20,18
-db 19,19,19,19,22,28,26,25,25,25,25,26,25,19,19,19,19,19,18,24,27,21,19,20,20,20,20,20,20,25
-db 22,19,20,20,20,20,23,24,19,20,20,20,20,26,23,19,19,20,20,19,19,27,29,26,27,27,27,27,26,28
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,30,31,31,31,31,24,16,16,16,16,23,26,16,16,16,22,31,31,31,31,31,16,16,31,31,31,31,30
-db 22,17,30,31,31,31,28,16,16,20,22,30,28,26,31,31,31,31,31,31,17,20,31,31,31,31,25,16,19,31
-db 31,31,31,30,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,21,19,20,20,20,19,22,28,22,20,20,20
-db 20,21,26,24,25,25,25,25,25,26,27,21,19,20,20,20,20,20,20,25,22,19,20,20,20,20,24,24,19,20
-db 20,20,20,26,23,19,20,20,20,19,19,27,29,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,26,31,31,31,31,31,24,16,16
-db 16,16,29,31,29,19,16,20,30,31,31,31,31,16,20,31,31,31,31,26,16,16,31,31,31,31,31,16,16,16
-db 16,16,16,16,25,30,31,31,31,31,19,21,31,31,31,31,25,16,23,31,31,31,31,28,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,22,21,19,20,20,20,19,22,27,21,19,20,20,20,20,26,29,31,31,31,31,31,28
-db 26,21,19,19,19,19,19,19,19,25,22,19,20,20,20,20,23,24,18,20,20,20,20,26,23,19,20,20,19,19
-db 19,27,29,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,24,31,31,31,31,31,30,16,16,16,23,31,31,31,31,17,16,25,31
-db 31,31,31,16,24,31,31,31,31,23,16,16,30,31,31,31,31,16,16,16,16,16,16,16,16,27,31,31,31,31
-db 16,21,31,31,31,31,27,16,23,31,31,31,31,27,16,16,16,20,21,17,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,21,19
-db 20,20,20,19,22,27,22,19,20,20,20,20,26,25,26,26,26,26,26,26,26,21,20,20,20,20,20,20,20,25
-db 22,19,20,20,20,20,23,24,19,20,20,20,20,26,23,19,20,20,19,20,19,27,29,26,27,27,27,27,26,28
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,17,31,31,31,31,31,31,27,16,20,31,31,31,31,31,18,17,31,31,31,31,31,16,27,31,31,31,31,29
-db 23,29,31,31,31,31,17,16,16,28,28,16,16,16,22,31,31,31,31,31,16,21,31,31,31,31,28,16,16,29
-db 31,31,31,27,16,16,28,31,31,30,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,21,19,20,20,20,19,22,27,22,19,20,20
-db 20,20,25,19,20,19,20,20,19,24,27,25,24,24,24,25,25,25,25,26,21,19,20,20,20,20,23,24,19,20
-db 20,20,20,26,23,19,19,20,20,20,19,27,28,26,26,26,26,26,25,28,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,26,31,31,31,31,31,31,30
-db 31,31,31,31,31,31,16,16,29,31,31,31,29,16,24,31,31,31,31,31,31,31,31,31,31,31,19,16,17,31
-db 31,30,27,30,31,31,31,31,31,23,16,22,31,31,31,31,21,16,22,31,31,31,31,26,16,23,31,31,31,31
-db 21,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,23,21,19,20,20,20,19,22,27,22,19,20,20,20,20,25,19,20,20,20,20,19,25
-db 27,27,27,27,27,27,27,27,26,27,21,19,19,19,19,19,23,24,19,20,20,20,20,26,23,19,19,19,19,19
-db 19,28,26,23,24,24,24,24,22,26,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,17,31,31,31,31,31,31,31,31,31,31,31,31,20,16,16,29,31
-db 31,31,30,16,16,24,31,31,31,31,31,31,31,31,31,31,31,16,28,31,31,31,31,31,31,31,31,31,21,16
-db 16,22,31,31,31,31,21,16,28,31,31,31,31,27,16,24,31,31,31,31,31,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,17,19,18,17,16,17,16,16,16,16,17,18,27,27,27,27,27,27,27,27,27,27,27,27,28,21,19
-db 20,20,20,19,22,27,22,19,20,20,20,20,25,19,20,20,20,20,19,25,27,20,19,19,19,19,19,19,19,25
-db 22,19,20,20,20,20,23,24,19,20,20,20,20,25,23,20,20,20,20,20,18,28,24,21,23,23,23,23,20,24
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,20,31,31,31,31,31,31,31,31,31,31,20,16,16,21,31,31,31,31,31,26,16,21,31,31,31,31
-db 29,22,31,31,31,31,31,20,28,31,31,31,31,31,31,31,31,31,19,16,16,27,31,31,31,31,24,16,29,31
-db 31,31,31,31,17,16,31,31,31,31,21,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,27,26,26,26,27,27,17
-db 16,16,16,27,26,26,26,26,26,26,26,26,26,26,26,26,25,26,20,19,20,20,20,19,22,27,22,19,20,20
-db 20,20,25,19,20,20,20,20,19,25,27,20,19,19,19,19,19,19,19,24,29,29,29,29,29,28,26,24,18,19
-db 19,19,19,25,25,27,27,26,25,24,22,28,26,22,23,23,23,23,21,25,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,27,31,31,31,31
-db 25,21,25,20,16,16,16,24,31,31,31,31,31,27,16,16,22,31,31,28,16,16,31,31,31,31,31,19,16,29
-db 31,31,31,31,31,31,30,20,16,16,20,31,31,31,31,25,17,16,21,31,31,31,31,31,24,16,22,28,27,17
-db 16,16,16,16,16,16,16,16,16,19,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,27,26,26,26,27,27,18,16,16,16,27,25,26,26,26,26,26
-db 26,26,26,26,26,26,25,25,20,19,20,20,20,19,22,27,22,19,20,20,20,20,25,19,20,20,20,20,19,24
-db 27,21,20,20,20,20,20,20,19,24,30,31,31,30,31,30,28,23,18,20,20,20,20,25,26,29,29,29,29,28
-db 27,29,30,29,29,30,29,29,29,30,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,19,23,28,31,23,20,19,22,25,25,20,16,16,16,18,24,28
-db 31,30,23,16,16,16,16,17,20,16,16,16,19,30,31,31,31,25,16,16,22,31,31,31,31,26,16,16,23,30
-db 31,31,21,22,17,16,16,16,16,18,28,30,30,27,18,16,16,16,16,16,16,16,16,16,16,16,16,21,29,31
-db 31,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,26,26,26,26,27,27,18,16,16,16,27,25,26,26,26,26,26,26,26,26,26,26,26,25,25,21,19
-db 20,20,20,19,22,27,22,19,20,20,20,20,25,19,20,20,20,20,19,24,27,21,19,20,20,20,20,20,20,25
-db 23,21,21,21,21,21,25,27,28,28,28,28,28,26,24,21,21,21,21,21,20,28,30,29,29,29,29,29,29,30
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,18,26,31,31,31,31,19,17,28,31,31,31,31,26,17,16,16,16,16,17,16,16,16,16,16,16,16,16,16
-db 16,16,23,30,31,31,31,28,16,21,28,31,31,31,31,17,16,20,31,31,31,30,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,31,31,31,31,19,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,23,27,27,22,19,20,17
-db 16,16,16,23,27,27,27,27,27,27,27,27,27,27,27,27,27,28,21,19,20,20,20,19,22,27,22,19,20,20
-db 20,20,25,19,20,20,20,20,19,24,27,21,19,20,20,20,20,20,20,25,21,18,19,19,18,19,24,29,31,31
-db 31,31,31,27,23,19,19,19,19,19,18,27,29,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,27,31,31,31,31,31,31,31,31
-db 31,31,31,31,31,26,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,31,31,31,31,31,23,16,28
-db 31,31,31,31,28,16,16,23,31,31,31,31,26,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22
-db 28,29,28,17,16,16,18,31,31,31,31,30,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,17,16,16,16,16,16,16,16,16,17,16,17,17,17,18
-db 17,18,18,18,17,18,17,26,21,19,20,20,20,19,22,28,22,19,20,20,20,20,25,19,20,20,20,20,19,24
-db 27,21,19,20,20,20,20,20,20,25,22,19,20,20,19,20,25,25,24,24,24,24,24,26,23,20,20,20,20,20
-db 19,27,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,19,31,31,31,31,31,31,31,31,31,31,31,31,31,19,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,28,31,31,31,31,23,16,24,31,31,31,31,27,16,16,23,31,31
-db 31,31,27,16,16,16,16,16,16,16,16,16,16,16,16,16,16,19,29,31,31,31,31,16,16,16,19,31,31,31
-db 31,31,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,23,20,19
-db 20,20,20,19,22,28,22,19,20,20,20,20,25,19,20,20,20,20,19,24,27,21,20,20,18,18,19,20,20,26
-db 22,18,19,19,19,19,25,23,18,19,19,19,19,25,23,20,20,20,20,20,19,27,28,26,27,27,27,27,26,28
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,23,31,31,31,31,31,24,23,31,31,31,31,31,29,18,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,28,31,31,31,31,24,16,23,31,31,31,31,29,16,16,16,24,31,31,30,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,23,31,31,31,31,28,16,16,16,16,21,30,31,31,19,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,17,16,16,16,16,16,16,16,16,17,17,16,16,16,17,17,16,16,16,16
-db 16,16,16,16,16,16,16,16,17,17,17,17,17,17,17,16,16,24,20,18,19,19,19,18,21,28,23,19,20,20
-db 20,20,25,19,20,20,20,20,19,24,27,21,19,20,22,23,22,19,20,25,25,24,24,24,24,24,27,23,19,20
-db 20,20,20,25,23,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,31,31,31,31,31,16,16
-db 27,31,31,31,31,31,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,27,31,31,31,31,24,16,23
-db 31,31,31,31,29,16,16,16,16,17,21,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,18,31,31
-db 31,31,26,16,16,16,16,16,16,20,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,19,20,17,16,16,16,16
-db 21,19,16,16,16,16,16,16,19,27,27,27,27,27,27,27,27,20,20,20,20,20,20,20,21,21,27,27,27,27
-db 27,27,27,27,27,27,27,28,22,21,22,22,22,22,24,28,23,19,19,19,19,20,25,19,20,20,20,20,19,24
-db 27,21,19,20,29,31,27,19,20,24,29,31,30,30,30,30,28,23,19,20,20,20,20,26,23,20,20,20,20,20
-db 19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,17,31,31,31,31,31,31,18,16,28,31,31,31,31,31,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,18,31,31,31,31,26,16,16,26,31,31,31,31,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,17,16,16,16,16,16,16,31,31,31,31,23,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,18,23,26,26,26,16,16,16,24,26,26,21,16,16,16,16,17,27,26
-db 26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,27,26,26,27,29
-db 29,29,29,30,29,26,23,18,19,19,19,19,25,19,20,20,20,20,19,24,27,21,19,20,28,30,27,19,20,24
-db 29,29,29,29,29,29,27,23,19,20,20,20,20,26,23,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28
-db 31,31,27,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,29,31,31,31,31,31,18,16,29,31,31,31,31,25,16,16,16,16,16,17,22,24,27,28,23,17,16,16
-db 16,16,21,31,31,31,31,22,16,18,29,31,31,31,27,16,16,16,16,21,23,23,22,16,16,16,16,16,22,26
-db 29,30,30,27,16,16,16,16,30,31,31,31,25,17,22,19,16,16,20,23,23,22,17,16,16,16,16,16,19,23
-db 25,25,23,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,21,27,25,25,27,16,16,16,27,26,26,27,17,16,16,16,20,26,26,26,26,26,26,26,26,26,26,26,26
-db 26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,25,27,28,27,28,29,28,27,24,21,21,21
-db 21,22,25,19,20,20,20,20,19,24,27,21,19,20,25,27,24,19,20,24,27,27,26,27,27,27,26,23,19,20
-db 20,20,20,26,23,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28,31,31,27,20,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,25,31,31,31,31,27,16,20
-db 30,31,31,31,28,16,16,16,16,16,24,31,31,31,31,31,31,31,26,18,16,16,26,31,31,31,29,16,16,22
-db 31,31,31,31,18,16,16,20,29,31,31,31,31,16,16,16,21,28,31,31,31,31,31,31,24,16,20,28,31,31
-db 31,31,31,31,31,25,17,26,31,31,31,31,20,16,16,16,24,29,31,31,31,31,31,31,22,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,20,27,26,26,27,16,16,16,27
-db 26,26,25,17,16,16,16,19,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26
-db 26,26,26,26,26,26,26,26,20,19,20,20,20,20,23,27,29,30,30,30,30,30,26,19,20,20,20,20,19,24
-db 27,21,19,20,20,20,20,19,20,25,22,19,20,20,20,20,23,24,19,20,20,20,20,26,23,20,20,20,20,20
-db 19,28,28,26,27,27,27,27,26,28,31,31,27,26,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,26,31,31,31,31,27,22,31,31,31,31,26,16,16,16,16,16,18
-db 31,31,31,31,31,31,31,31,31,31,20,16,25,31,31,31,31,24,16,20,31,31,31,31,29,16,16,31,31,31
-db 31,31,27,16,16,28,31,31,31,31,31,31,31,31,31,16,25,31,31,31,31,31,31,31,31,18,25,31,31,31
-db 31,31,16,16,16,25,31,31,31,31,31,31,31,31,22,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,17,20,27,27,20,16,16,16,22,27,27,19,16,16,16,16,16,27,27
-db 27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,28,20,18
-db 20,19,19,19,22,28,27,28,28,28,28,28,26,18,19,19,19,19,18,24,27,21,19,20,19,19,19,19,20,25
-db 21,19,20,20,20,19,23,24,19,20,20,20,20,26,23,20,20,20,20,20,19,28,28,26,26,27,27,26,25,28
-db 31,31,27,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,25,31,31,31,31,31,31,31,31,31,26,16,16,16,16,16,16,27,31,31,29,29,31,31,31,31,31,31
-db 27,16,24,31,31,31,31,25,16,20,31,31,31,31,30,16,16,27,31,31,31,31,24,16,21,31,31,31,31,31
-db 31,24,24,30,27,16,29,31,31,31,31,31,31,31,27,16,23,31,31,31,31,28,16,16,22,31,31,31,31,25
-db 23,31,31,31,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,16,16,16,16,27,27,27,27,27,27
-db 27,27,27,16,16,16,16,16,16,16,16,16,16,16,16,16,16,24,21,19,20,20,20,19,22,28,23,20,21,21
-db 21,22,25,18,18,18,18,18,17,24,27,21,19,19,19,20,20,19,20,25,22,19,20,20,20,19,23,24,19,20
-db 20,20,20,26,23,19,19,19,19,19,18,28,26,23,24,23,23,24,22,26,31,31,27,20,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,25,31,31,31,31,31,31,31
-db 31,31,25,25,31,19,16,16,16,22,24,18,16,16,16,24,31,31,31,31,20,16,24,31,31,31,31,24,16,20
-db 31,31,31,31,28,16,16,22,31,31,31,31,21,16,26,31,31,31,31,26,16,16,16,16,16,16,30,31,31,31
-db 31,29,24,26,16,16,17,31,31,31,31,25,16,16,27,31,31,31,27,16,21,31,31,31,26,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,17,17,16,16,16,19,27,23,20,16,16,17,17,17
-db 16,16,16,16,16,16,16,22,20,19,20,20,20,19,22,28,22,19,19,19,19,20,26,25,26,26,26,26,26,26
-db 26,24,21,20,20,21,21,19,20,25,22,19,20,20,20,19,23,24,19,20,20,20,20,26,23,19,19,18,18,18
-db 17,28,25,21,22,22,22,22,21,25,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,25,31,31,31,31,31,31,31,31,31,31,31,31,31,17,16,16,16
-db 16,16,16,20,17,20,31,31,31,31,20,16,24,31,31,31,31,22,16,19,31,31,31,31,27,16,16,25,31,31
-db 31,31,19,16,29,31,31,31,30,16,21,23,18,16,16,16,16,20,31,31,31,29,19,16,16,16,21,31,31,31
-db 31,25,16,16,30,31,31,31,22,16,30,31,31,31,31,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,20,27,27,25,16,16,16,16,16,16,16,16,16,16,16,16,22,21,19
-db 20,20,20,19,22,28,23,19,19,20,20,20,26,22,22,22,22,22,22,25,26,27,27,27,26,28,25,19,20,25
-db 22,19,20,20,20,19,23,24,19,20,20,20,20,26,25,26,26,25,25,26,23,28,29,28,28,28,28,28,28,29
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,28,31,31,31,31,31,30,27,31,31,31,31,31,31,25,16,16,16,16,24,30,31,31,31,31,31,31,31
-db 24,16,23,31,31,31,31,22,16,19,31,31,31,31,26,16,16,28,31,31,31,28,16,16,31,31,31,31,31,30
-db 31,31,31,27,16,16,16,18,31,31,31,31,31,16,16,16,24,31,31,31,30,16,16,21,31,31,31,31,21,16
-db 24,31,31,26,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,20,26,26,26,16,16,16,16,16,16,16,16,16,16,16,16,22,21,19,20,20,20,19,22,29,23,19,20,20
-db 20,21,26,18,19,19,19,18,18,24,27,28,29,27,30,31,26,18,20,25,22,19,20,20,20,19,23,24,19,20
-db 20,20,20,26,26,30,30,30,31,31,29,30,31,31,31,31,31,31,31,31,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,25,31,31,31,31,31,20,16
-db 27,31,31,31,31,31,31,16,16,21,30,31,31,31,31,31,31,31,31,31,20,16,28,31,31,31,31,22,16,24
-db 31,31,31,31,27,16,16,27,31,31,31,30,18,16,31,31,31,31,31,31,31,31,31,31,27,16,16,20,31,31
-db 31,31,29,16,16,16,22,31,31,31,31,21,16,25,31,31,31,31,25,16,16,18,19,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,18,26,26,24,17,16,16,16,16
-db 16,16,16,16,16,16,16,22,21,19,19,19,19,19,20,23,21,18,19,19,19,19,21,19,19,19,19,20,19,24
-db 27,24,23,22,29,29,28,25,25,26,21,19,20,20,20,20,23,24,18,20,20,20,20,26,25,24,24,24,24,24
-db 23,29,29,28,29,29,29,29,28,29,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,29,31,31,31,31,16,16,28,31,31,31,31,31,31,17,19,31
-db 31,31,31,31,27,27,31,31,31,31,17,16,30,31,31,31,31,23,16,26,31,31,31,31,28,16,16,26,31,31
-db 31,31,23,16,25,30,31,31,31,31,31,31,31,31,31,24,16,21,31,31,31,31,28,16,16,16,21,31,31,31
-db 31,28,16,28,31,31,31,31,22,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,19,20,18,16,16,16,16,16,16,16,16,16,16,16,16,22,21,19
-db 19,18,18,18,18,17,18,18,18,18,18,18,17,18,18,18,19,20,19,24,27,21,19,20,29,29,30,31,30,28
-db 21,19,20,20,20,20,23,24,18,20,20,20,20,26,23,19,19,19,19,19,18,27,28,26,26,26,26,27,25,28
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,21,30,31,31,31,31,18,16,20,30,31,31,31,31,31,17,24,31,31,31,31,23,16,23,31,31,31,31
-db 21,16,31,31,31,31,31,24,16,26,31,31,31,31,28,16,16,25,31,31,31,31,22,16,16,16,18,24,21,24
-db 31,31,31,31,31,31,17,16,29,31,31,31,29,16,16,16,20,31,31,31,31,25,16,28,31,31,31,31,22,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,21,19,18,18,18,18,18,18,18,18,18,18
-db 18,18,18,18,18,18,18,20,19,24,27,21,19,20,29,29,28,26,26,27,20,18,19,19,19,18,22,24,18,20
-db 20,20,20,26,23,20,20,20,20,20,19,27,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,28,31,31,31,31,31,17,16
-db 16,30,31,31,31,31,31,16,27,31,31,31,31,17,16,23,31,31,31,31,24,16,22,31,31,31,31,24,16,19
-db 28,31,31,31,29,16,16,28,31,31,31,31,21,16,16,16,16,16,16,16,18,30,31,31,31,31,16,17,31,31
-db 31,31,28,16,16,16,23,31,31,31,31,25,16,26,31,31,31,31,31,21,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,19,19,20,20,28,21,19,18,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,18,20,19,25
-db 28,21,19,20,29,29,25,19,20,25,24,22,22,22,22,22,24,23,18,20,20,20,20,26,23,20,20,20,20,20
-db 19,27,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,26,31,31,31,31,31,16,16,21,31,31,31,31,31,28,16,30,31
-db 31,31,31,16,16,27,31,31,31,31,20,16,18,31,31,31,31,25,16,16,27,31,31,31,31,16,16,22,31,31
-db 31,31,21,16,16,20,17,16,16,16,16,30,31,31,31,30,16,21,31,31,31,31,17,16,16,16,19,30,31,31
-db 31,25,16,23,31,31,31,31,31,19,16,18,17,20,26,18,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,17,17,16,16,16,16,16,16,16,16,16,24,25,25,25,26,20,19
-db 21,20,20,21,21,20,20,20,20,20,20,20,20,21,21,21,20,19,19,23,25,20,19,20,29,29,25,19,20,24
-db 30,31,31,31,31,31,29,23,18,20,20,20,20,26,23,20,20,20,20,20,19,27,28,26,27,27,27,27,26,28
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,27,31,31,31,31,31,22,22,31,31,31,31,31,27,17,17,31,31,31,31,31,28,29,31,31,31,31,22
-db 16,16,27,31,31,31,31,25,16,22,31,31,31,31,30,16,16,19,31,31,31,31,20,16,16,31,30,18,18,22
-db 29,31,31,31,31,26,16,21,31,31,31,31,27,18,16,16,16,29,31,31,31,24,16,21,31,31,31,31,31,29
-db 30,31,31,31,31,18,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,20,27,28,25,16,16,16,16,16,16,20,18,16,17,17,17,17,17,17,29,31,31,31,31,31,31,31,31,30
-db 30,30,30,30,31,31,25,17,18,17,17,18,17,18,29,29,26,20,22,25,29,30,30,30,30,29,28,23,18,19
-db 19,19,19,26,24,20,20,20,20,20,19,27,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,29,31,31,31,31,31,31,31
-db 31,31,31,31,31,24,16,17,25,31,31,31,31,31,31,31,31,31,31,28,18,16,20,31,31,31,31,21,16,16
-db 31,31,31,31,25,16,16,29,31,31,31,31,19,16,24,31,31,31,31,31,31,31,31,31,25,18,16,21,31,31
-db 31,31,31,19,16,16,24,31,31,31,31,24,16,17,23,29,31,31,31,31,31,31,31,31,31,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,27,24,23,26,20,16,16,16,16
-db 16,21,27,17,17,17,17,17,17,17,29,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,25,17,18,18
-db 18,18,17,18,28,29,28,28,28,29,29,27,26,21,20,20,23,23,17,19,19,19,18,26,24,20,20,20,20,20
-db 19,28,29,27,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,21,31,31,31,31,31,31,31,31,31,31,31,31,31,22,16,16,16,31
-db 31,31,31,31,31,29,31,31,31,31,24,16,25,31,31,31,31,26,16,20,31,31,31,31,30,18,16,29,31,31
-db 31,31,20,16,31,31,31,31,31,31,31,31,31,31,17,16,16,24,31,31,31,31,31,26,16,16,26,31,31,31
-db 31,27,16,16,16,31,31,31,31,31,31,31,31,31,21,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,27,23,22,25,21,16,16,16,16,16,22,28,17,18,18,18,18,18,17
-db 29,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,24,17,18,18,18,18,17,18,29,29,29,29,29,29
-db 29,27,26,20,19,19,21,28,29,29,29,29,29,27,23,20,20,20,20,20,19,27,30,28,28,28,28,28,28,29
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,20,31,31,31,31,31,31,31,31,31,31,31,29,19,16,16,16,16,23,31,31,31,31,18,25,31,31,31,31
-db 30,16,30,31,31,31,31,31,17,25,31,31,31,31,31,29,16,30,31,31,31,31,31,16,28,31,31,31,31,31
-db 31,31,31,28,18,16,16,26,31,31,31,31,31,31,24,16,28,31,31,31,31,31,20,16,16,23,31,31,31,31
-db 31,31,31,25,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 17,27,21,21,25,22,16,16,16,16,16,22,28,17,18,18,18,18,18,19,29,31,31,31,31,31,31,31,31,31
-db 31,31,31,31,31,31,25,17,18,18,18,18,18,18,29,29,29,29,29,29,29,27,26,21,19,19,21,29,31,31
-db 31,31,31,27,23,19,19,19,19,19,18,28,26,23,24,24,24,24,23,27,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,18,26,31,31,25,20,25,31
-db 31,29,27,19,16,16,16,16,16,22,30,31,31,18,16,25,31,31,31,28,23,16,29,31,31,31,31,27,17,24
-db 31,31,31,31,30,22,16,29,31,31,31,31,26,16,16,26,31,31,31,30,31,30,22,16,16,16,16,18,29,31
-db 31,31,31,29,17,16,29,31,31,31,31,27,19,16,16,16,20,29,31,31,28,27,24,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,18,25,25,19,17,16,16,16,16
-db 16,23,28,17,18,17,23,28,27,28,30,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,28,23,24,24
-db 24,24,24,22,21,21,21,22,23,23,23,26,27,21,19,19,22,25,22,23,22,23,23,26,23,18,18,18,18,18
-db 17,28,24,19,21,21,21,20,19,25,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,18,24,21,21,25,30,24,19,29,30,28,16,16,18,29,31
-db 31,31,31,16,16,16,19,23,19,16,16,16,17,21,25,26,22,16,16,16,19,23,26,24,17,16,16,17,23,26
-db 22,17,16,16,16,16,18,21,18,16,20,16,16,16,16,16,16,16,16,21,27,25,21,16,18,27,31,31,31,31
-db 23,16,16,16,16,16,16,16,20,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,18,27,17,16,16,16,16,16,16,23,28,17,18,17,25,31,31,31
-db 31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,29,25,26,26,26,26,26,24,18,17,17,18,20,19
-db 19,25,27,21,19,19,23,23,18,19,19,19,19,25,26,25,25,25,25,25,24,29,28,27,27,27,27,27,26,29
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,21,28,31,31,31,31,30,30,31,31,31,16,16,26,31,31,31,31,31,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,26,31,31,31,31,31,19,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,17,25,26,26,26,16,16,16,24,26,26,21,16,17,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26
-db 26,26,26,26,26,26,26,26,26,17,16,23,28,17,18,17,25,31,31,31,31,31,31,31,31,31,31,31,31,31
-db 31,31,31,31,31,31,29,25,26,26,26,26,26,24,18,18,17,19,20,19,20,27,28,21,19,19,24,24,18,20
-db 19,19,19,26,26,27,27,27,26,26,25,29,31,31,31,31,31,31,31,31,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,20,31,31,31,31,31,31
-db 31,31,31,31,29,16,16,22,31,31,31,31,28,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,18,31,31,31,31,28,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,20,27,25,25,27,16,16,16,27
-db 26,26,26,18,17,26,25,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,19
-db 17,26,28,16,17,16,24,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,28,25,26,26
-db 26,26,26,24,18,17,17,18,20,19,21,28,29,21,19,19,23,24,19,20,20,20,19,26,24,21,21,21,21,21
-db 20,28,29,28,28,28,28,28,28,29,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,29,31,31,31,31,31,29,30,31,31,31,30,16,16,18,31,31
-db 31,31,21,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,30,31,31,31,18
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,19,27,25,25,27,17,16,16,27,26,26,27,27,27,26,26,26,26,26
-db 26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,27,28,22,23,22,27,30,30,30
-db 31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,29,25,26,26,26,26,26,25,21,22,21,21,20,20
-db 19,27,29,24,23,23,25,23,19,20,20,20,19,26,24,19,19,19,19,19,19,27,28,26,27,26,26,27,25,28
-db 31,31,28,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,21,31,31,31,31,31,26,16,16,23,31,31,31,19,16,18,31,31,31,31,28,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,19,31,31,31,31,29,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,18,26,26,26,25,16,16,16,23,26,26,21,18,17,27,26,26,26,26,26,26,26,26,26,26,26,26,26,26
-db 26,26,26,26,26,26,26,26,26,22,21,21,24,31,31,31,30,29,29,29,30,31,31,31,31,31,31,31,31,31
-db 31,31,31,31,31,31,29,25,26,26,26,26,26,26,27,27,28,24,18,19,16,25,30,29,29,29,28,23,18,19
-db 19,20,20,26,24,20,20,20,20,20,19,27,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,29,31,31,31,31,27,16,16
-db 16,16,21,31,25,16,16,18,31,31,31,31,28,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,18,31,31,31,31,31,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,26,19
-db 17,17,19,30,29,29,29,29,29,29,30,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,29,25,26,26
-db 26,26,26,26,26,26,26,23,17,18,16,26,30,29,29,28,27,24,21,22,22,20,19,26,24,20,20,20,20,20
-db 19,27,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,20,31,31,31,31,31,24,17,16,16,16,16,18,16,16,16,21,31,31
-db 31,31,24,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,16,16,16,16,16,16,16,16,16,17,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,21,26,28,27,23,17,16,16,16,16,16,16,31,31,31,31,27
-db 16,16,16,16,16,16,16,17,17,16,16,16,16,16,16,16,16,17,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,18,24,27,27,25,19,16,16,21,24,21,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,27,19,18,17,19,30,29,29,29,29,29,29
-db 30,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,29,25,26,26,26,26,26,26,26,26,26,23,17,18
-db 16,26,30,29,29,29,26,27,29,29,29,22,19,26,24,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,28,31,31,31,31,31,31,31,28,18,16,16,16,16,16,16,23,31,31,31,31,22,16,21,26,27,24,17,16
-db 16,16,16,16,16,22,27,30,31,29,22,16,16,16,16,16,23,30,31,27,17,16,16,16,16,16,16,16,16,16
-db 16,16,23,31,31,31,31,31,17,16,16,19,24,26,28,31,31,31,31,24,16,16,16,16,18,26,29,31,31,25
-db 16,16,16,16,16,21,29,31,29,21,16,16,16,16,16,16,16,16,16,16,16,18,31,31,31,31,31,22,18,29
-db 31,31,31,22,16,22,26,29,29,18,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,17,26,19,17,17,19,30,29,29,29,29,29,29,31,31,31,31,31,31,31,31,31,31
-db 31,31,31,31,31,31,29,25,26,26,26,26,26,26,26,26,26,23,17,18,16,25,29,28,28,28,26,27,30,29
-db 29,21,19,26,24,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,27,31,31,31,31,31,31,31,31
-db 31,22,16,16,16,16,16,20,31,31,31,31,19,17,31,31,31,31,30,17,16,16,16,16,25,31,31,31,31,31
-db 31,23,16,16,16,24,31,31,31,31,19,16,16,16,19,26,30,28,26,18,16,16,24,31,31,31,31,25,16,16
-db 21,31,31,31,31,31,31,31,31,26,16,16,16,20,31,31,31,31,31,31,27,16,16,16,18,31,31,31,31,26
-db 16,16,16,16,23,29,29,27,21,16,16,18,31,31,31,31,31,16,27,31,31,31,31,19,19,31,31,31,31,31
-db 19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,20,22,26,26,24,19
-db 18,17,20,29,28,27,28,29,29,29,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,29,25,26,25
-db 29,30,29,29,29,28,29,24,17,18,17,19,20,20,20,21,24,28,30,29,27,19,17,25,24,20,20,20,20,20
-db 19,28,28,26,27,26,26,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,17,31,31,31,31,31,31,31,31,31,31,29,22,16,16,16,18,31,31
-db 31,31,22,25,31,31,31,31,31,29,16,16,16,25,31,31,31,31,31,31,28,22,16,16,23,31,31,31,31,31
-db 17,16,16,25,31,31,31,31,31,22,16,16,20,31,31,31,31,18,16,25,31,31,31,31,31,31,31,31,31,29
-db 16,16,20,31,31,31,31,31,31,29,24,16,16,18,31,31,31,31,31,23,16,16,20,30,31,31,31,31,30,16
-db 16,16,29,31,31,31,26,16,23,31,31,31,31,19,29,31,31,31,31,31,30,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,20,24,19,19,19,18,24,26,25,25,27,27,26,28,30,29,29
-db 31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,29,25,26,25,30,31,31,31,31,31,31,25,17,18
-db 18,18,18,18,18,19,23,28,29,29,28,27,26,26,24,19,19,19,19,19,19,28,25,22,23,23,23,23,21,25
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,20,31,31,31,31,31,31,31,31,31,31,31,19,16,16,17,31,31,31,31,31,31,31,31,31,31,31,31
-db 19,16,18,31,31,31,31,31,23,16,16,16,16,16,24,31,31,31,31,31,17,16,17,31,31,31,31,31,31,23
-db 16,16,22,31,31,31,31,16,23,31,31,31,31,29,23,31,31,31,31,27,16,16,31,31,31,31,31,27,17,16
-db 16,16,16,18,31,31,31,31,31,23,16,16,27,31,31,31,31,31,29,16,16,17,30,31,31,31,22,16,19,31
-db 31,31,31,29,31,31,31,31,31,31,30,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,22,23,17,17,18,16,25,28,27,27,27,27,26,28,30,29,29,31,31,31,31,31,31,31,31,31,31
-db 31,31,31,31,31,31,29,25,26,25,30,31,31,31,31,31,31,25,17,18,18,18,18,18,19,20,23,27,30,29
-db 30,31,31,27,24,19,19,19,19,19,19,28,25,22,23,23,23,23,21,25,31,31,27,20,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,18,21,30,31,31,31,31
-db 31,31,31,31,31,18,16,18,31,31,31,31,31,31,27,25,31,31,31,31,20,16,22,31,31,31,31,22,16,21
-db 29,30,30,19,16,30,31,31,31,31,24,16,18,31,31,31,31,31,31,25,16,16,27,31,31,31,20,16,31,31
-db 31,31,31,16,16,31,31,31,31,27,16,19,31,31,31,31,25,16,16,27,30,30,25,16,23,31,31,31,31,28
-db 16,16,27,31,31,31,31,31,31,16,16,20,31,31,31,24,16,16,18,31,31,31,31,31,31,25,27,31,31,31
-db 28,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,21,23,17,18,18,16,25
-db 27,27,27,27,27,26,28,30,29,29,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,29,25,26,25
-db 30,31,31,31,31,31,31,25,17,18,18,18,18,19,26,26,27,27,27,27,25,24,24,26,26,27,27,27,27,27
-db 25,29,29,28,29,29,29,29,28,29,31,31,27,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,30,31,31,31,31,31,31,31,31,31,25,16,19,31,31
-db 31,31,31,28,16,22,31,31,31,31,20,16,29,31,31,31,27,16,21,31,31,31,31,20,16,31,31,31,31,31
-db 21,16,16,29,31,31,31,31,31,31,16,16,28,31,31,31,20,17,31,31,31,31,31,16,16,31,31,31,31,26
-db 16,26,31,31,31,29,16,16,30,31,31,31,30,16,26,31,31,31,31,27,16,16,25,31,31,31,31,31,31,22
-db 16,22,31,31,31,28,16,16,17,31,31,31,31,31,25,16,25,31,31,31,29,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,20,23,17,18,18,16,26,28,28,28,27,27,26,28,30,29,29
-db 31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,29,25,26,25,30,31,31,31,31,31,31,25,17,18
-db 18,18,18,19,30,29,29,27,25,26,22,19,20,26,27,30,30,30,30,30,28,29,31,31,31,31,31,31,31,31
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,20,23,27,31,31,31,31,31,31,31,29,16,18,31,31,31,31,31,16,18,31,31,31,31,26
-db 17,18,31,31,31,31,20,16,27,31,31,31,31,28,16,29,31,31,31,31,20,16,24,31,31,31,31,31,31,27
-db 16,17,31,31,31,31,18,18,31,31,31,31,28,16,16,31,31,31,31,25,16,31,31,31,31,25,16,20,31,31
-db 31,31,31,18,22,31,31,31,31,26,16,18,31,31,31,31,31,31,31,18,16,26,31,31,31,24,16,16,19,31
-db 31,31,31,30,16,17,31,31,31,30,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,18,18,18,18,17,17,17,17,17,18,18,18
-db 18,18,19,23,23,17,18,18,17,24,26,25,25,27,27,26,28,29,29,29,28,28,28,28,28,28,28,28,28,28
-db 28,28,28,28,28,28,27,25,26,26,28,28,28,28,28,28,29,24,17,18,18,18,18,19,29,29,29,28,27,28
-db 25,24,24,26,24,23,23,23,23,23,23,29,29,28,28,28,28,28,28,29,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,31
-db 31,31,31,31,31,31,16,16,25,31,31,31,29,16,20,31,31,31,31,18,16,25,31,31,31,31,20,16,16,30
-db 31,31,31,31,18,21,31,31,31,31,21,16,30,31,31,31,31,31,31,28,16,17,31,31,31,30,16,16,29,31
-db 31,31,21,16,23,31,31,31,31,26,18,31,31,31,31,25,16,16,24,31,31,31,31,26,16,31,31,31,31,28
-db 16,22,31,31,31,31,31,31,31,19,16,26,31,31,31,16,16,16,19,31,31,31,31,27,16,21,31,31,31,30
-db 21,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,27,27,27,27,27,27,27,27,27,26,27,27,27,27,27,28,23,17,18,18,17,21
-db 23,22,22,27,27,26,28,29,29,29,26,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,26,26,26,26
-db 26,25,25,25,25,25,27,23,17,18,18,18,18,19,29,29,29,29,29,29,28,28,29,27,23,19,19,19,19,19
-db 18,28,27,25,26,26,26,26,25,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,18,19,16,16,16,16,23,31,31,31,31,31,31,16,17,29,31
-db 31,31,27,16,17,31,31,31,31,30,16,25,31,31,31,31,18,16,18,30,31,31,31,29,17,20,31,31,31,31
-db 21,16,31,31,31,31,31,31,31,31,16,17,30,31,31,26,16,23,31,31,31,31,26,16,21,31,31,31,31,25
-db 18,31,31,31,31,24,16,16,26,31,31,31,31,22,16,30,31,31,31,27,16,27,31,31,31,31,31,31,31,22
-db 16,26,31,31,28,16,16,16,16,29,31,31,31,27,16,17,29,31,31,31,30,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,26,25
-db 26,26,26,26,26,26,26,26,26,26,26,26,26,26,23,17,18,18,17,22,23,22,22,27,27,26,28,29,29,29
-db 26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,27,24,17,18
-db 18,18,18,19,29,29,29,29,29,29,29,29,29,27,23,20,20,20,20,19,19,28,28,26,27,27,27,27,26,28
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,23,31,25,16,16,16,16,16,29,31,31,31,31,31,16,19,31,31,31,31,28,16,19,31,31,31,31,31
-db 16,25,31,31,31,31,28,16,19,31,31,31,31,27,16,18,31,31,31,31,24,18,31,31,31,29,31,31,31,31
-db 16,21,31,31,31,21,16,28,31,31,31,31,27,16,17,31,31,31,29,16,19,31,31,31,31,29,18,16,28,31
-db 31,31,31,18,16,29,31,31,31,28,18,31,31,31,29,31,31,31,31,19,16,31,31,31,24,16,16,16,20,31
-db 31,31,31,30,16,16,28,31,31,31,26,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,26,25,26,26,26,26,26,26,26,26,26,26
-db 26,26,26,26,23,17,18,18,17,22,23,22,22,27,27,26,28,30,29,29,26,26,26,26,26,26,26,26,26,26
-db 26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,27,24,17,18,18,18,18,19,29,29,29,29,29,29
-db 29,29,29,27,23,20,20,20,20,19,19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,23,31,31,29,16,16,16,16,16
-db 30,31,31,31,31,31,16,19,31,31,31,31,28,16,22,31,31,31,31,30,16,23,31,31,31,31,31,17,16,27
-db 31,31,31,31,17,16,31,31,31,31,31,31,31,31,22,17,31,31,31,31,22,26,31,31,31,19,16,22,31,31
-db 31,31,30,19,26,31,31,31,29,16,18,31,31,31,31,31,20,16,20,31,31,31,31,25,16,30,31,31,31,31
-db 31,31,31,30,17,30,31,31,31,25,24,31,31,31,22,16,16,16,21,31,31,31,31,30,16,16,31,31,31,31
-db 28,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,17,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,27,23,17,18,18,17,22
-db 23,22,22,27,27,26,28,30,29,30,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26
-db 26,26,26,26,26,26,27,24,17,18,18,18,18,19,29,29,29,28,27,27,28,29,29,27,23,20,20,20,20,19
-db 19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,24,31,31,31,23,16,16,16,28,31,31,31,31,31,25,16,20,31,31
-db 31,31,31,16,16,27,31,31,31,29,16,22,31,31,31,31,28,16,16,28,31,31,31,30,16,16,20,31,31,31
-db 31,31,31,31,17,16,31,31,31,31,31,31,31,31,31,16,16,16,28,31,31,31,31,31,31,31,31,31,31,23
-db 16,31,31,31,31,31,16,16,21,31,31,31,31,21,16,19,28,31,31,31,31,31,31,25,16,31,31,31,31,31
-db 31,31,31,31,21,16,16,16,19,31,31,31,31,24,16,18,31,31,31,31,31,17,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,27,27,27,27,27,27,27,27,27,27,28,23,17,18,18,17,22,23,22,22,27,27,27,27,27,27,27
-db 26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,27,23,17,18
-db 18,18,18,19,29,29,30,26,20,21,25,29,29,27,23,20,20,20,20,19,19,28,28,26,27,27,27,27,26,28
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,22,31,31,31,31,30,26,28,31,31,31,31,31,29,16,16,20,31,31,31,31,26,16,17,28,31,31,31,28
-db 16,19,31,31,31,31,31,16,16,31,31,31,31,28,16,16,17,31,31,31,31,31,31,31,16,16,30,31,31,31
-db 31,31,31,31,29,16,16,21,31,31,31,31,31,31,31,31,31,31,31,24,16,31,31,31,31,31,20,16,25,31
-db 31,31,31,18,16,16,29,31,31,31,31,31,31,21,16,28,31,31,31,31,31,31,31,31,19,16,16,16,18,31
-db 31,31,31,24,16,19,31,31,31,31,27,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,17,17,17,17,17,16,17,17
-db 17,17,17,28,23,17,18,18,17,22,23,22,22,27,27,27,27,27,27,27,26,26,26,26,26,26,26,26,26,26
-db 26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,27,23,17,18,18,18,18,19,29,29,30,26,20,20
-db 25,29,29,27,23,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,20,31,31,31,31,31,31,31,31
-db 31,31,31,30,16,16,16,19,31,31,31,31,23,16,25,31,31,31,31,29,16,16,19,27,31,31,31,30,29,31
-db 31,31,31,20,16,16,19,31,31,31,31,31,31,25,16,16,21,31,31,31,31,31,31,31,26,16,16,18,31,31
-db 31,31,31,31,24,30,31,31,31,28,16,18,22,31,31,31,31,28,31,31,31,31,26,16,16,17,31,31,31,31
-db 31,31,31,16,16,18,31,31,31,31,31,31,31,31,17,16,16,16,16,31,31,31,31,28,16,16,22,31,31,31
-db 29,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,28,23,17,18,18,17,22
-db 23,22,22,27,27,27,27,27,27,27,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26
-db 26,26,26,26,26,26,27,23,17,18,18,18,18,19,29,29,30,26,20,20,25,29,29,27,23,20,20,20,20,20
-db 19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,17,31,31,31,31,31,31,31,31,31,31,31,19,16,16,16,23,31,31
-db 31,31,29,16,27,31,31,31,31,31,17,16,16,31,31,31,31,31,31,31,31,31,22,16,16,16,16,30,31,31
-db 31,31,31,22,16,16,24,31,31,31,31,31,31,27,17,16,16,16,24,31,31,31,31,23,16,31,31,31,31,31
-db 17,16,24,31,31,31,31,31,31,31,31,27,16,16,16,16,26,31,31,31,31,31,29,16,16,21,31,31,31,31
-db 31,31,31,20,16,16,16,16,20,31,31,31,31,28,16,16,26,31,31,31,31,19,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,17,16,16,16,16,16,17,28,23,17,18,18,17,22,23,22,22,27,27,27,27,27,27,27
-db 26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,27,23,17,18
-db 18,18,18,19,29,29,30,26,21,21,25,29,29,27,23,20,20,20,20,20,19,28,29,27,28,27,27,27,26,28
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,23,30,31,31,31,31,31,28,31,31,20,16,16,16,16,30,31,31,31,30,21,16,22,31,31,31,31,31
-db 27,16,16,24,31,31,31,31,31,31,30,23,16,16,16,16,16,27,31,31,31,31,28,18,16,16,23,31,31,31
-db 31,31,27,16,16,16,16,16,16,26,31,31,31,16,19,31,31,31,31,31,27,16,20,30,31,31,31,31,31,30
-db 26,16,16,16,16,16,21,31,31,31,31,30,22,16,16,20,31,31,31,31,31,30,20,16,16,16,16,16,25,31
-db 31,31,31,30,16,17,31,31,31,31,31,27,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,26,26,26,26,17,16,16,19,26
-db 26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26
-db 26,26,26,26,22,17,18,18,17,22,23,23,23,24,24,23,25,27,27,27,25,25,25,25,25,25,25,25,25,25
-db 25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,26,22,18,18,18,18,18,19,29,29,29,28,26,27
-db 28,29,29,26,23,19,19,19,19,19,19,28,27,24,25,24,24,24,23,27,31,31,27,20,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,20,23,25,26,25,16
-db 20,19,16,16,16,16,16,24,27,27,23,16,16,16,16,21,31,31,31,31,23,16,16,16,21,28,30,31,30,18
-db 16,16,16,16,16,16,16,16,21,24,27,23,16,16,16,16,16,20,25,27,27,20,16,16,16,16,16,16,16,16
-db 20,23,22,16,16,29,31,31,31,31,23,16,16,17,25,29,31,31,22,16,16,16,16,16,16,16,16,19,23,27
-db 25,16,16,16,16,16,18,23,27,28,22,16,16,16,16,16,16,16,23,31,31,31,27,21,16,16,31,31,31,31
-db 31,27,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,19,27,25,25,26,18,17,16,21,26,26,26,26,26,26,26,26,26,26,26
-db 26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,25,21,17,18,18,17,22
-db 23,23,23,22,22,22,25,27,27,27,25,25,25,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24
-db 24,24,24,24,24,24,26,22,18,18,18,18,18,19,29,29,29,29,29,29,29,29,29,26,23,19,19,19,19,18
-db 17,28,25,21,22,21,21,21,20,25,31,31,27,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,17,21,21,19,16,16,16,16,16,16,16,17,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,23,25,24,18
-db 16,16,16,16,16,16,17,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,17,20,19,16,16,16,16,21,25,27,25,21,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 19,27,25,25,26,27,17,17,22,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26
-db 26,26,26,26,26,26,26,26,26,26,26,26,26,25,22,17,18,18,17,22,23,23,23,23,23,22,25,28,27,27
-db 25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,26,22,18,18
-db 18,18,18,19,29,29,29,29,28,29,28,29,29,26,25,25,25,25,25,25,23,29,28,26,27,27,27,26,26,29
-db 31,31,27,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,26,26,26,27,17,17,16,19,26
-db 26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26
-db 26,26,26,27,23,17,18,18,17,22,23,23,23,23,23,22,26,28,27,27,25,24,25,25,24,24,24,24,24,24
-db 24,24,24,24,24,24,25,25,25,25,25,25,25,25,25,25,26,22,18,18,18,18,18,19,31,30,29,29,30,30
-db 30,30,30,26,24,25,25,25,25,25,24,28,31,30,30,30,30,30,29,30,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,17,17,16,16,16,16,16,17,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,23,23,17,18,18,17,22
-db 23,23,23,23,23,23,24,25,25,25,25,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,25,25,25,25
-db 25,25,25,25,25,25,26,22,17,18,18,18,18,19,26,26,27,27,26,27,27,27,27,26,23,19,19,19,19,19
-db 18,27,29,26,27,27,27,26,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,21,23,17,18,18,17,22,23,23,23,23,23,23,23,22,22,22
-db 26,27,27,27,27,27,27,27,27,27,27,27,27,27,27,28,26,24,25,25,25,25,25,25,25,25,26,22,17,18
-db 18,18,18,18,18,18,23,24,18,19,19,19,19,25,23,20,20,20,20,20,19,28,29,26,27,27,27,27,26,28
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,21,23,17,18,18,17,22,23,23,23,23,23,23,23,23,23,23,27,27,27,27,27,27,27,27,27,27
-db 27,27,27,27,27,27,26,24,25,25,25,25,25,25,25,25,26,22,18,18,18,18,18,18,18,18,23,25,20,21
-db 21,21,21,26,23,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,20,23,17,18,18,17,22
-db 23,23,23,23,23,23,23,23,23,23,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,26,24,25,25
-db 25,25,25,25,25,25,26,22,17,18,18,18,18,18,21,21,23,28,30,29,29,29,30,26,23,20,20,20,20,20
-db 19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,20,23,18,18,19,18,22,23,23,23,23,23,23,23,23,23,23
-db 27,27,26,26,26,26,26,26,26,26,26,26,26,26,26,27,26,24,25,25,25,25,25,25,25,25,26,22,17,18
-db 18,18,18,19,28,28,26,28,30,30,30,30,30,26,23,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,17,26,27,26,24,21,21,21,21,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23
-db 23,23,23,23,23,24,25,25,25,25,25,25,25,25,25,25,26,22,17,18,18,18,18,19,29,29,28,24,19,20
-db 20,20,19,25,24,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,19,19,19,28,20
-db 18,18,19,23,23,23,23,23,23,23,22,22,22,22,22,22,22,23,23,22,23,23,23,23,23,22,24,25,25,25
-db 25,25,25,25,25,25,26,22,17,18,18,19,19,20,29,29,28,23,18,19,19,19,19,25,24,20,20,20,20,20
-db 19,27,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,28,19,17,17,18,23,23,23,23,23,23,23
-db 23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,22,23,25,25,25,25,25,25,25,25,25,26,22,17,18
-db 17,24,27,26,29,29,28,23,19,20,20,20,20,26,23,20,20,20,20,20,19,27,28,26,27,27,27,27,26,28
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,27,19,18,18,19,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23
-db 23,23,23,23,23,22,23,25,25,25,25,25,25,25,25,25,26,22,17,18,17,27,30,29,29,29,28,23,19,20
-db 20,20,20,26,23,19,19,19,19,19,18,28,25,23,24,24,24,24,23,26,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,17,16,16,16,16,27,19
-db 17,18,18,22,21,21,22,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,22,23,25,25,25
-db 25,25,25,24,23,23,24,21,17,18,16,26,30,29,30,30,28,23,19,20,20,20,20,26,23,19,19,19,19,19
-db 18,28,24,21,22,22,22,22,20,25,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,24,25,25,25,18,16,17,27,19,17,18,18,19,19,18,21,24,23,23
-db 23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,22,23,25,25,25,25,25,25,22,19,19,19,19,18,18
-db 17,23,25,24,24,24,25,23,18,20,20,20,20,26,25,23,23,23,23,23,22,29,28,26,27,27,27,27,26,28
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 17,27,22,22,25,24,17,16,27,19,18,18,18,18,18,17,21,24,23,23,23,23,23,23,23,23,23,23,23,23
-db 23,23,23,23,23,22,23,25,25,25,25,25,25,22,18,18,18,18,18,18,18,18,18,18,18,18,22,24,18,20
-db 20,20,20,26,27,30,30,30,30,30,28,29,31,31,31,31,31,31,31,31,31,31,28,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,27,22,22,26,28,17,16,18,19
-db 17,17,17,18,18,17,21,24,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,22,23,25,25,25
-db 25,25,25,22,18,18,18,18,18,18,18,18,18,18,18,18,22,24,19,20,20,20,20,26,26,26,26,26,26,26
-db 24,28,30,30,30,30,30,30,30,30,31,31,28,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,27,24,23,26,20,17,16,18,21,20,20,20,18,18,17,20,23,21,22
-db 23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,21,18,18,18,18,18,18
-db 18,18,18,18,18,18,22,24,19,20,20,20,20,26,22,19,20,20,20,19,19,27,28,26,27,27,27,27,26,28
-db 31,31,28,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,18,19,18,16,16,16,16,17,20,28,29,27,17,18,18,18,18,18,18,23,23,23,23,23,23,23,23,23,23
-db 23,23,23,23,23,23,20,16,17,17,17,17,17,18,18,18,18,18,18,18,18,18,18,18,18,18,23,24,19,20
-db 20,20,20,26,23,20,20,20,20,20,19,27,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17
-db 17,24,28,17,18,18,18,18,18,18,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,20,17,17,17
-db 17,17,17,18,18,18,18,18,18,18,18,18,18,18,18,18,23,24,18,20,20,20,20,26,23,20,20,20,20,20
-db 19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,20,27,17,18,18,18,18,18,18
-db 23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,20,17,18,18,18,18,18,18,18,18,18,18,18,18
-db 18,18,18,18,19,19,23,24,18,20,20,20,20,26,23,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28
-db 31,31,28,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,20,27,17,18,18,18,18,18,18,23,23,23,23,23,23,23,23,23,23
-db 23,23,23,23,23,23,20,17,18,18,18,18,18,18,18,18,18,18,18,18,18,17,18,18,19,19,23,24,18,20
-db 20,20,20,26,23,20,20,20,20,20,19,27,28,26,27,27,27,27,26,28,31,31,28,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,17,20,26,26,26,26,27,21,18,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19
-db 19,19,19,19,18,18,18,18,18,18,20,27,28,27,28,27,27,23,18,20,20,20,19,26,23,20,20,20,20,20
-db 19,27,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,28,28,28,29,30,21,18
-db 18,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,18,20,19,20,20,20,20,20,18,18,18,18,18,18
-db 21,27,28,27,27,26,27,23,17,19,18,19,19,26,23,20,20,20,20,20,19,27,28,26,27,27,27,27,26,28
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,17,17,16,16,16,16,16,17,17,16,16,16,17,18,17,17,17,18,18,18,18,18,18,18,18,18,18
-db 17,17,17,18,17,17,17,17,17,17,17,17,17,27,27,27,27,28,21,18,18,18,18,18,18,18,18,18,18,18
-db 18,18,18,18,18,18,18,19,19,20,20,20,20,20,18,18,18,18,18,18,20,21,21,21,21,21,24,26,25,25
-db 25,25,25,26,23,19,19,19,19,19,19,28,26,24,25,25,25,25,24,27,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,21,27,26,22,16,16,16,21
-db 26,26,19,17,16,27,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,27,26,26,26,26,26,27,27
-db 27,27,26,26,26,26,26,27,20,18,17,17,17,17,17,17,17,18,18,18,18,18,17,17,17,17,18,19,19,20
-db 20,19,20,20,18,18,18,18,18,18,19,20,20,20,20,19,22,29,31,31,31,31,31,27,22,19,19,19,19,19
-db 18,28,24,21,22,22,22,22,20,25,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,20,27,26,26,27,17,16,16,27,25,26,27,27,27,26,26,26,26,26
-db 26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,25,25,22,22
-db 22,22,22,22,22,22,19,17,18,18,18,18,20,18,18,18,19,19,19,20,20,19,19,19,18,18,18,18,18,18
-db 19,20,20,20,20,19,22,27,26,27,27,27,27,27,24,23,23,23,23,22,21,28,27,25,26,26,26,26,25,27
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,20,27,25,26,27,17,16,16,27,25,26,27,27,27,26,25,26,26,26,26,26,26,26,26,26,26,26,26,26
-db 26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,25,24,26,29,30,30,30,30,28,27,24,22,23,23
-db 23,23,25,19,19,19,19,19,19,20,20,18,18,18,18,18,18,18,18,18,19,20,20,20,20,19,23,24,18,19
-db 19,19,19,25,27,29,29,29,29,29,27,29,31,31,31,31,31,31,31,31,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,18,27,26,26,27,16,16,16,27
-db 26,26,23,18,18,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26
-db 26,26,26,26,26,26,26,26,23,26,27,27,27,27,27,25,28,31,31,31,31,31,25,19,19,19,19,19,19,19
-db 19,18,18,18,18,18,18,19,18,19,20,20,20,20,20,20,24,24,18,20,20,20,20,26,26,26,27,27,26,26
-db 25,29,30,30,30,30,30,30,30,30,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,27,27,27,27,27,27,27,27,27,27,27,27,27,28,20,19
-db 20,20,20,20,22,26,26,29,28,28,28,28,26,20,21,21,21,21,21,21,20,19,18,18,18,18,19,20,19,23
-db 21,19,20,20,20,20,24,24,18,20,20,20,20,26,22,20,20,20,20,20,19,27,28,26,27,27,27,27,26,28
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,20,19,20,20,20,19,22,27,22,20,20,20
-db 20,20,26,29,30,30,30,30,30,27,26,20,18,18,18,18,19,20,19,24,22,19,20,20,20,20,24,24,18,20
-db 20,20,20,26,22,19,20,20,19,19,19,27,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,22,20,19,20,20,20,19,22,27,22,19,20,20,20,19,26,30,31,31,31,31,31,28
-db 26,20,18,19,20,20,20,19,19,25,22,19,20,20,20,20,24,24,18,20,20,20,20,26,22,20,20,20,20,20
-db 19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,20,19
-db 20,20,20,19,22,27,22,19,20,20,20,20,25,21,22,22,22,22,21,25,27,20,18,19,20,20,20,20,19,25
-db 22,19,20,20,20,20,24,24,18,20,20,20,20,26,22,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28
-db 31,31,27,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,20,19,20,20,20,19,22,27,22,19,20,20
-db 20,20,25,19,19,19,19,19,19,24,27,20,18,19,20,19,20,20,19,25,22,19,20,20,20,20,24,24,18,20
-db 20,20,20,26,22,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,22,20,19,20,20,20,19,22,28,22,19,20,20,20,20,25,19,20,20,20,20,19,24
-db 27,21,19,19,20,20,20,20,19,25,22,19,20,20,20,20,23,24,18,20,20,20,20,26,23,20,20,20,20,20
-db 19,28,28,26,27,27,27,27,26,28,31,31,27,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,19,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,20,19
-db 20,20,20,19,22,28,22,19,20,20,20,20,25,19,20,20,20,20,19,25,27,21,20,20,20,19,20,20,19,25
-db 22,19,20,20,20,20,23,24,18,20,20,20,20,26,23,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,17,23,25,25,25,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,18,18,18,18,18,18,18,18,18,18,18,18,18,17,22,20,19,20,20,20,19,22,28,22,19,20,20
-db 20,20,25,19,20,20,20,20,19,25,27,21,19,20,20,19,20,20,19,25,22,19,20,20,20,20,23,24,18,20
-db 20,20,20,26,23,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,19,25,22,23,27,18,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,19,27,27,27,27,27,27,27
-db 27,27,27,27,27,27,27,28,21,19,20,20,20,19,22,28,22,19,20,20,20,20,25,19,20,20,20,20,19,25
-db 27,21,19,19,18,18,18,18,18,25,22,19,20,20,20,19,23,24,18,20,20,20,20,26,23,20,20,20,20,20
-db 19,28,28,26,27,27,27,27,26,28,31,31,27,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,20,25,21,21,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,18,27,25,26,26,26,26,26,26,26,26,26,26,26,26,26,26,21,19
-db 20,20,20,19,22,28,22,19,20,20,20,20,25,19,20,20,20,20,19,24,27,21,19,19,22,22,22,23,23,26
-db 21,19,19,19,19,19,23,24,18,20,20,20,20,25,23,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,19,25,22,22,26,18,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,18,27,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,21,19,20,20,20,19,22,28,22,19,20,20
-db 20,20,25,19,20,20,20,20,19,25,27,21,19,20,30,30,30,30,29,28,22,21,22,22,22,22,24,24,18,20
-db 20,20,20,25,23,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28,31,31,27,20,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,27,26,26,26,26,26,26,26
-db 26,26,26,26,26,26,26,28,21,18,19,19,19,19,21,28,23,19,20,20,20,20,25,19,20,20,20,20,19,24
-db 27,21,19,19,24,24,23,23,21,24,28,29,30,31,31,31,28,23,18,19,19,19,19,25,23,20,20,20,20,20
-db 19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,28,21,19
-db 20,20,20,20,22,28,23,19,20,20,20,20,25,19,20,20,20,20,19,24,27,21,19,20,20,20,20,20,19,23
-db 29,29,29,29,29,29,27,23,19,19,19,19,19,25,23,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,18,27,27,27,27,27,27,16,16,27,27,27,27,27,27,26
-db 27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,26,27,27,27,27,27,27,27,23,19,20,20
-db 20,20,25,19,20,20,20,20,19,24,27,21,19,20,20,20,20,20,19,25,23,20,20,20,20,20,23,28,30,30
-db 30,30,30,27,23,20,20,20,20,20,19,28,27,25,26,26,26,26,25,28,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,19,27,26,26,26,26,26,26,17,17,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26
-db 26,26,26,26,26,25,25,25,25,28,28,28,28,29,28,27,22,19,19,19,19,20,25,19,20,20,20,20,19,24
-db 27,21,19,20,20,20,20,20,19,25,22,19,19,19,19,19,21,29,31,31,31,31,31,27,24,20,20,20,19,20
-db 19,28,24,21,23,23,23,23,22,26,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,19,27,26,26,26,26,26
-db 26,18,17,26,25,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,25,25,25,26,21,21
-db 22,22,22,22,23,27,22,18,19,19,19,19,25,19,20,20,20,20,19,24,27,21,19,20,20,20,20,20,19,25
-db 22,19,20,20,20,19,23,25,22,22,22,22,22,26,24,19,19,19,19,19,18,28,23,21,23,22,23,22,20,26
-db 31,31,27,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,18,22,27,26,26,26,26,27,16,16,27,26,26,26,26,26,26
-db 26,26,26,26,26,27,27,27,27,27,27,27,27,27,26,26,26,28,20,19,20,19,19,19,22,27,26,25,26,26
-db 25,25,25,19,19,19,19,19,19,24,27,21,20,20,20,20,20,20,19,25,22,19,20,20,20,20,23,24,18,19
-db 19,19,19,26,25,25,25,25,25,25,23,28,29,28,29,29,29,28,28,29,31,31,27,20,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,17,20,20,20,20,20,19,16,16,18,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27
-db 27,27,27,27,27,27,27,28,20,19,20,20,20,19,22,27,28,29,28,29,28,28,25,18,17,17,17,17,17,23
-db 27,21,20,20,20,20,20,20,19,25,22,19,20,20,20,20,24,24,19,20,20,20,20,26,26,30,30,30,29,29
-db 27,29,31,31,31,31,31,31,31,31,31,31,27,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,17,16,16,17,17,17,17,17,17,16,16,16,16,16,17,17,16,16,17,16,16,16,22,20,19
-db 20,20,20,19,22,27,24,23,23,23,23,23,26,24,24,24,24,24,24,26,27,20,19,19,19,19,19,19,19,25
-db 22,19,20,20,20,20,24,24,19,20,20,20,20,26,24,24,24,24,24,24,23,28,30,28,29,29,29,29,29,30
-db 31,31,27,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,21,20,19,20,20,20,19,22,27,21,19,20,20
-db 20,20,25,25,26,25,26,26,26,27,27,22,21,21,21,21,21,21,20,25,22,19,20,20,20,20,24,24,19,20
-db 20,20,20,26,22,19,19,19,19,19,19,27,28,26,27,27,27,27,26,28,31,31,27,20,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,22,20,19,20,20,20,19,22,27,22,19,20,20,20,20,25,19,19,19,19,19,18,24
-db 27,26,26,26,26,26,26,26,25,26,22,19,20,20,20,19,23,24,18,20,20,20,20,26,23,20,20,20,20,20
-db 19,28,28,26,27,27,27,27,26,28,31,31,27,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,20,19
-db 20,20,20,19,22,27,22,19,20,20,20,20,25,19,20,20,20,20,19,24,27,25,25,25,25,25,25,25,25,27
-db 21,18,19,19,19,19,23,24,18,20,20,20,20,26,23,20,20,20,20,19,19,28,28,26,27,27,27,27,26,28
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,20,19,20,20,20,19,22,27,22,19,20,20
-db 20,20,25,19,20,20,20,20,19,24,28,20,18,19,19,19,19,19,18,24,23,21,21,21,21,21,24,24,18,20
-db 20,20,20,26,23,20,20,20,20,20,19,27,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,22,20,19,20,20,20,19,22,27,22,19,20,20,20,20,25,19,20,20,20,20,19,24
-db 27,21,19,20,20,20,20,20,19,24,29,30,30,30,30,29,27,23,18,19,19,19,19,26,23,20,20,20,20,20
-db 19,28,29,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,21,20,19
-db 20,20,20,19,22,28,22,19,20,20,20,20,25,19,20,20,20,20,19,24,27,21,20,20,20,20,20,20,19,23
-db 29,30,29,30,30,30,29,23,19,20,19,20,19,26,23,20,20,20,20,20,19,27,29,26,27,27,27,27,26,28
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,20,19,20,20,20,19,22,28,22,19,20,20
-db 20,20,25,19,20,20,20,20,19,24,27,21,20,20,20,20,20,20,19,25,23,21,21,21,21,21,24,27,26,26
-db 26,26,26,26,23,20,20,20,20,20,19,27,29,27,27,27,27,27,27,28,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,22,20,18,19,19,19,19,22,28,22,19,20,20,20,20,25,19,20,20,20,20,19,24
-db 27,21,20,20,20,20,20,20,20,25,22,19,19,19,19,19,22,27,28,28,28,28,28,26,23,19,19,19,19,19
-db 19,28,26,23,24,24,24,24,23,26,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,18,18,17,17,17,17,18
-db 17,17,17,16,17,18,18,18,18,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,18,17,18,25,21,18
-db 19,19,19,19,22,28,22,19,20,20,20,20,25,19,20,20,20,20,19,24,27,21,20,20,20,20,20,20,20,25
-db 22,19,20,20,20,20,23,25,21,22,22,22,22,26,23,18,17,17,17,17,17,28,23,19,20,19,20,20,18,24
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,21,22,20,21,21,21,21,21,21,22,22,22,25,22,21,21,21,21,21
-db 21,21,21,21,21,21,21,21,21,21,21,21,21,21,21,21,21,22,19,18,19,19,18,18,19,22,20,19,19,19
-db 19,20,25,19,20,20,20,20,19,24,27,21,20,20,20,20,20,20,20,25,22,19,20,20,20,20,24,24,18,19
-db 19,19,19,26,25,24,24,24,24,24,24,29,28,26,26,26,26,26,26,28,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,20,19,19,19,20,20,20,19,19
-db 18,30,26,16,17,17,17,17,17,17,19,18,20,23,19,16,17,17,17,17,17,17,17,17,17,17,17,17,17,17
-db 17,17,17,17,17,17,17,17,18,18,18,18,18,18,18,17,19,19,19,19,19,20,26,19,20,20,20,20,19,24
-db 27,21,20,20,20,20,20,20,20,26,22,19,20,20,20,20,24,24,19,20,20,20,20,26,24,24,24,24,24,24
-db 23,28,31,31,31,31,31,31,30,31,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,16,17,17,17,17
-db 16,17,17,16,16,16,16,16,16,18,19,22,22,22,22,22,23,23,22,22,22,23,22,18,18,18,18,18,18,18
-db 20,20,21,24,20,17,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
-db 18,18,18,18,18,18,18,19,19,19,19,19,22,19,20,20,20,20,19,24,27,21,20,20,20,20,20,20,20,26
-db 22,19,20,20,20,20,24,24,19,20,20,20,20,26,22,19,19,19,19,18,17,27,29,27,28,28,28,28,27,28
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,17,26,27,27,27,27,27,27,27,27,27,27,27,27,27,27,28
-db 24,16,17,17,17,17,17,17,17,17,17,16,17,18,18,18,18,18,18,18,19,19,20,22,19,18,18,18,18,18
-db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
-db 18,18,17,19,19,19,19,19,19,25,28,21,20,20,20,20,20,20,20,26,22,19,20,20,20,20,24,24,19,20
-db 20,20,20,26,22,20,20,20,20,20,19,28,28,26,27,26,26,27,26,28,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,18,18,18
-db 18,18,24,24,22,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,22,18,18,18,18,18,18,18,18,18
-db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
-db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,19,19,19,19,19,19,22
-db 24,20,20,20,20,20,20,20,20,26,22,19,20,20,20,20,24,24,19,20,20,20,20,26,22,20,20,20,20,20
-db 19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,23,25,25,25,25,26,20,17,18,18,18,18,18
-db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
-db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
-db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,17,19,20,20,20,20,20,20,20,26
-db 22,19,20,20,20,20,24,24,19,20,20,20,20,26,23,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,20,17,17,17,17,17,17,17,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
-db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
-db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
-db 18,18,18,18,18,18,18,18,18,18,18,19,19,19,19,19,19,19,20,26,22,19,20,20,20,20,24,24,19,20
-db 20,20,20,26,23,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,19,19,19,19
-db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
-db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
-db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
-db 18,19,19,19,19,19,19,18,19,25,22,19,20,20,20,20,24,24,19,20,20,20,20,26,23,20,20,20,20,20
-db 19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,25,29,30,25,17,18,18,18,18,18,18,18,18
-db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
-db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
-db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
-db 19,19,19,20,19,19,24,24,19,20,20,20,20,26,24,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,21,28,30,25,17,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
-db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
-db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
-db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,17,19,19,19,19,19,19,24,24,19,20
-db 20,20,20,26,24,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,18
-db 20,23,24,20,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
-db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
-db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
-db 18,18,18,18,18,18,18,18,18,18,18,19,18,18,18,18,21,21,19,20,20,20,20,26,24,20,20,20,20,20
-db 19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,24,20,17,18,18,18,18,18
-db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
-db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
-db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
-db 18,18,18,18,18,18,18,19,19,19,19,19,19,26,25,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,18,24,24,24,24,25,25,25,25,25,25,25,25,25,25,25,18,18
-db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
-db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
-db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,19,19
-db 19,19,19,27,26,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,18,24,26,26,29,29,29,29,29,29,29,29,29,30,29,18,18,18,18,18,18,18,18,18,18,18,18
-db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
-db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
-db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,19,19,19,19,18,23,22,19,19,19,20,19
-db 19,27,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,17,16,16,16,16,18,23,22,22,22,22,22,22,22,22,22,21,21,21,21,21,21,22,21,21,20,21,21
-db 19,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
-db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
-db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,19,19,19,19,19,18,27,28,26,27,27,27,27,26,28
-db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,19,20
-db 20,19,18,18,18,18,18,17,17,17,17,18,18,18,18,27,27,23,18,17,19,18,18,18,18,18,19,19,19,19
-db 19,19,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
-db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
-db 18,18,18,18,18,19,19,19,19,19,18,27,27,25,26,26,26,26,24,26,31,31,27,19,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,17,18,16,19,18,17,17,17,17,17,18,18,18,18,18,18,17,17,17,17,17,17,17,17
-db 17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17
-db 17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17
-db 17,27,24,21,22,22,22,22,20,24,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,19
-db 19,18,18,19,19,18,19,19,19,19,19,19,19,19,19,19,19,18,18,18,18,18,18,18,18,18,18,18,18,18
-db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
-db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,19,24,21,22,22,22,22,20,24
-db 31,30,18,18,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,18,27,27,27,27,27,27,27,27,27
-db 27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,26,27,27,27,27,27,27,27,27,27,27,26,26,27,27
-db 27,27,27,27,27,27,27,27,27,27,26,26,26,27,27,26,26,27,27,26,26,26,27,26,26,26,26,26,26,26
-db 26,26,26,26,27,27,26,26,27,26,18,16,16,17,27,27,27,27,18,17,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17
-db 17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17
-db 17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17
-db 17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
-db 16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,21,25,28,29,30,31,28,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,17,24,31,31,31,31,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,21,30,31,31,31
+    db 31,31,31,31,30,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,30,31,31,31,31,27,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,24,31,31,31,31,31,31,31,31,31,31,24,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,17,31,31,31,31,31,21,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,23,31,31,31,31,31,28,31,31,31,31,31,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,30,31,31,31,31,22,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,25,31,31,31,31,31,19,16
+    db 28,31,31,31,31,25,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,30,31,31,31,31,23,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,21,31,31,31,31,31,25,16,16,23,31,31,31,31,31,17,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,25,31,31,31,31,24,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,21,31,31,31,31,31,23,16,16,17,31,31,31,31,31,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,31,31,31,31,26,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,27,27,21,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,17,17,17,17,17,17,17
+    db 16,16,16,16,16,16,16,16,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,31,31,31,31,31,21,16,16
+    db 18,31,31,31,31,21,16,16,16,16,16,21,25,28,28,23,16,16,16,16,16,25,31,31,31,30,19,16,16,16
+    db 16,16,22,26,28,28,22,16,16,16,16,17,27,31,31,31,27,16,18,29,28,19,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,19,21,21,20,28,28,28,28,28,28,28,28,28,28,28,28,28,28,28,28,23,16
+    db 17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,21,31,31,31,31,31,17,16,16,23,31,31,30,22,16,16,16,16,17
+    db 26,31,31,31,31,31,31,17,16,16,16,28,31,31,31,29,17,16,16,16,18,27,31,31,31,31,31,25,16,16
+    db 16,28,31,31,31,31,20,16,31,31,31,31,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,26
+    db 27,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,28,19,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,26,31,31,31,31,31,24,16,16,19,21,19,16,16,16,16,16,18,30,31,31,31,31,31,30,29,17,16,16
+    db 16,26,31,31,31,31,25,16,16,19,31,31,31,31,31,31,29,25,16,16,16,27,31,31,31,31,22,27,31,31
+    db 31,31,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,25,25,25,28,29,29,29,30,30,30,31,31
+    db 31,31,31,31,31,31,31,31,31,27,20,17,17,16,16,16,17,17,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,28,31,31,31,31,31,28,16,16
+    db 16,16,16,16,16,16,16,16,25,31,31,31,31,30,19,16,16,16,16,16,16,26,31,31,31,31,23,16,16,29
+    db 31,31,31,31,28,18,16,16,16,16,16,21,31,31,31,31,31,31,31,31,31,31,21,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,21,21,19,20,20,20,19,22,29,28,27,30,31,31,31,31,30,30,31,31,31,31,27
+    db 26,27,27,27,27,27,27,27,27,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,28,31,31,31,31,31,16,16,16,16,16,16,16,16,16,16,16,27,31
+    db 31,31,31,18,16,22,29,30,27,16,16,26,31,31,31,31,22,16,17,31,31,31,31,30,16,16,24,30,29,25
+    db 16,17,31,31,31,31,31,31,31,31,31,31,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,21,19
+    db 20,19,19,19,22,28,27,26,29,31,30,30,28,28,27,29,31,31,31,31,31,31,30,30,30,30,30,30,30,31
+    db 21,18,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,27,31,31,31,31,31,21,16,16,16,16,16,16,16,16,16,17,31,31,31,31,23,16,24,31,31,31,31,16
+    db 16,25,31,31,31,31,21,16,23,31,31,31,31,17,16,26,31,31,31,31,16,19,31,31,31,31,31,31,27,22
+    db 25,30,18,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,21,19,20,20,20,19,22,28,23,20,21,21
+    db 21,21,26,27,26,28,31,31,31,31,31,31,31,31,31,31,31,31,31,31,28,20,18,17,17,17,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,27,31,31,31,31,31,26,16,16
+    db 16,16,16,16,16,16,16,25,31,31,31,31,16,16,31,31,31,31,31,23,16,26,31,31,31,31,20,16,30,31
+    db 31,31,25,16,18,31,31,31,31,31,19,19,31,31,31,31,31,21,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,22,21,19,20,20,20,19,22,28,22,19,19,19,19,19,25,21,21,21,22,21,21,26
+    db 27,28,28,30,31,31,31,31,31,31,30,30,30,30,30,29,17,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,22,31,31,31,31,31,24,16,16,16,16,16,16,16,16,16,30,31,31
+    db 31,29,16,16,21,31,31,31,31,30,16,30,31,31,31,31,19,17,31,31,31,31,24,16,16,23,31,31,31,31
+    db 27,17,31,31,31,31,24,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,21,19
+    db 20,20,20,19,22,28,22,19,20,20,20,20,25,18,19,19,19,19,18,24,26,27,28,30,31,31,31,31,31,31
+    db 31,31,31,31,31,30,19,17,17,18,17,19,19,20,20,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,30,31,31,31,31,24,16,16,16,16,20,21,16,16,17,31,31,31,31,29,16,16,23,31,31,31,31,27
+    db 16,30,31,31,31,31,19,19,31,31,31,31,22,16,16,25,31,31,31,31,24,17,31,31,31,31,26,17,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,21,19,20,20,20,19,22,28,22,19,20,20
+    db 20,20,25,19,20,20,20,20,19,25,27,23,23,24,24,24,24,24,24,27,29,29,29,31,31,31,30,30,29,29
+    db 29,29,29,29,29,28,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,24,31,31,31,31,31,23,16,16
+    db 16,16,28,31,25,16,16,31,31,31,31,31,20,16,26,31,31,31,31,19,16,31,31,31,31,31,20,18,31,31
+    db 31,31,28,17,16,28,31,31,31,31,17,16,31,31,31,31,31,21,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,21,21,19,20,20,20,19,22,28,22,19,20,20,20,20,25,19,20,20,20,20,19,25
+    db 28,20,19,19,19,19,19,19,19,23,28,27,27,31,31,31,31,31,31,31,31,31,31,31,31,30,22,16,17,17
+    db 16,16,16,17,17,17,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,28,31,31,31,31,31,26,16,16,16,17,31,31,31,24,16,30,31,31
+    db 31,31,28,16,18,31,31,31,31,27,16,21,31,31,31,31,21,18,31,31,31,31,31,21,16,20,31,31,31,31
+    db 23,17,31,31,31,31,31,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,21,21,19
+    db 20,20,20,19,22,28,22,19,20,20,20,20,25,19,20,20,20,20,19,25,27,21,19,20,20,20,20,20,19,24
+    db 25,23,24,26,26,26,27,29,29,29,31,31,31,31,31,30,22,26,25,29,29,29,29,29,29,29,22,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,19,31,31,31,31,31,31,23,16,16,30,31,31,31,31,18,26,31,31,31,31,22,16,18,31,31,31,31,25
+    db 16,22,31,31,31,31,24,16,31,31,31,31,31,17,16,19,31,31,31,31,20,18,31,31,31,31,31,18,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,21,21,19,20,20,20,19,23,28,22,19,20,20
+    db 20,20,25,19,20,20,20,20,19,24,27,21,19,20,20,20,20,20,20,25,22,19,20,19,19,19,22,27,27,28
+    db 31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,30,19,17,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,29,31,31,31,31,31,31,26
+    db 29,31,31,31,31,31,17,24,31,31,31,31,27,16,21,31,31,31,31,21,16,28,31,31,31,31,21,16,31,31
+    db 31,31,31,21,16,24,31,31,31,31,17,17,31,31,31,31,31,19,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,21,21,19,20,20,20,19,22,28,22,19,20,20,20,20,25,19,20,20,20,20,19,24
+    db 27,21,19,20,20,20,20,20,20,25,22,19,20,20,20,19,23,26,23,25,27,27,27,29,29,29,30,31,31,31
+    db 31,31,31,31,31,31,30,28,28,18,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,20,31,31,31,31,31,31,31,31,31,31,31,31,23,16,18,23,31
+    db 31,31,31,26,30,31,31,31,31,17,16,21,31,31,31,31,19,16,20,23,31,31,31,31,26,31,31,31,31,30
+    db 16,16,29,31,31,31,31,18,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,20,18
+    db 19,19,19,18,22,28,22,19,20,20,20,20,25,19,20,20,20,20,19,24,27,21,19,20,20,20,20,20,20,25
+    db 22,19,20,20,20,20,24,24,17,18,18,18,17,25,25,26,27,31,31,31,31,31,31,31,31,31,31,31,31,29
+    db 19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,26,31,31,31,31,31,31,31,31,31,31,27,16,16,16,19,31,31,31,31,31,31,31,31,31,19,16
+    db 16,28,31,31,31,31,29,16,16,21,31,31,31,31,31,31,31,31,31,18,16,19,31,31,31,31,31,19,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,21,21,19,20,20,20,20,22,27,22,19,20,20
+    db 20,20,25,19,20,20,20,20,19,24,27,21,19,20,20,20,20,20,20,25,22,19,20,20,20,20,24,24,18,20
+    db 20,20,19,26,26,26,27,30,29,29,29,30,30,30,30,30,30,30,30,29,27,18,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,24,31,31,31,31,31
+    db 30,25,28,25,16,16,16,16,19,27,31,31,31,31,31,30,29,21,16,16,17,31,31,31,31,31,31,21,16,21
+    db 30,31,31,31,31,31,30,26,18,16,16,22,31,31,31,31,31,23,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,21,27,27,27,27,27,27,26,22,19,19,19,19,20,25,19,20,20,20,20,19,24
+    db 27,21,19,20,20,20,20,20,20,25,22,19,20,20,20,20,24,24,18,20,20,20,20,26,24,20,20,20,20,20
+    db 20,28,28,26,27,27,27,27,26,28,31,31,20,18,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,23,26,27,25,22,19,22,18,16,16,16,16,16,18
+    db 30,31,31,31,25,16,16,16,16,16,17,26,30,31,31,31,22,17,16,16,16,25,29,31,31,24,16,16,16,16
+    db 16,23,31,31,31,31,29,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,19,28
+    db 29,29,29,29,28,26,22,19,19,19,19,19,25,19,20,20,20,20,19,24,27,20,19,19,19,19,19,19,19,25
+    db 22,19,20,20,20,20,24,24,18,20,20,20,20,26,23,19,19,19,19,19,19,28,28,26,27,27,27,27,26,28
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,18,25,28,29,31,31,31,31,21,16,16,17,25,31,31,31,31,21,16,16,16,16,16,16
+    db 16,16,16,21,21,17,16,16,16,16,16,16,16,17,17,16,16,16,16,16,16,25,31,31,31,31,28,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,20,22,21,22,21,22,21,23,27,25,25,25,25
+    db 25,22,25,19,19,19,19,19,19,24,27,20,19,19,19,19,19,19,19,25,22,19,20,20,20,20,23,24,18,20
+    db 20,20,20,26,23,19,19,19,19,19,19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,25,31,31,31,31
+    db 31,31,31,31,31,21,16,24,31,31,31,31,31,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,29,31,31,31,31,28,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,22,20,18,20,19,19,19,22,27,27,29,28,29,29,27,25,18,19,19,19,19,18,24
+    db 27,26,26,26,26,26,26,27,26,27,21,19,20,20,20,20,23,24,19,20,20,20,20,26,24,20,19,19,20,19
+    db 19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,29,31,31,31,31,31,31,31,31,31,31,22,16,22,31,31
+    db 31,31,30,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,24,31,31,31,31,24,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,20,19
+    db 20,20,20,19,22,28,24,22,22,22,22,23,26,24,24,25,25,25,24,26,26,29,30,30,30,30,30,30,29,28
+    db 21,19,19,19,19,19,23,24,19,20,20,20,20,26,24,20,20,20,20,19,19,28,28,26,27,27,27,27,26,28
+    db 31,31,27,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,18,30,31,31,31,31,27,19,29,31,31,31,31,18,16,20,31,31,31,31,31,17,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,21,31,31,31,31,21,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,21,19,20,20,20,19,22,28,22,18,19,19
+    db 19,19,26,27,27,28,28,29,29,27,26,24,23,23,23,23,23,24,23,26,21,18,19,19,19,19,22,24,19,20
+    db 20,20,20,26,24,20,20,20,20,19,19,28,28,26,27,27,27,27,26,28,31,31,27,20,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,30,31,31,31,31,29,16,16
+    db 26,31,31,31,31,30,16,19,31,31,31,31,31,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,21,31,31,31,31,27,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,23,21,19,20,20,20,19,22,28,23,19,20,20,20,20,25,22,22,23,23,24,24,25
+    db 27,20,19,19,19,19,19,19,19,24,25,24,24,24,24,24,25,24,19,20,20,20,20,26,24,20,20,20,20,19
+    db 19,28,28,26,27,27,27,27,26,28,31,31,27,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,23,31,31,31,31,31,24,16,16,20,31,31,31,31,31,16,16,27,31
+    db 31,31,31,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,20,31,31,31,31,24,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,23,21,19
+    db 20,20,20,19,22,28,23,19,20,20,20,20,25,19,20,19,19,19,19,24,27,21,19,20,20,20,20,20,19,23
+    db 29,31,31,31,31,31,29,23,18,19,19,19,19,26,24,20,20,20,20,20,19,27,28,26,27,27,27,27,26,28
+    db 31,31,27,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,19,31,31,31,31,31,23,16,16,17,31,31,31,31,29,16,16,26,31,31,31,31,18,16,16,16,16,16,17
+    db 20,23,20,16,16,16,16,16,16,16,16,16,16,21,24,26,26,23,16,16,16,24,31,31,31,31,21,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,23,21,19,20,20,20,19,22,28,23,19,20,20
+    db 20,20,25,19,20,20,20,20,19,24,27,21,19,20,20,20,20,20,19,24,26,27,27,27,27,27,26,25,22,22
+    db 22,22,23,26,24,20,20,20,20,20,19,28,27,25,26,26,26,26,25,28,31,31,27,20,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,19,31,31,31,31,31,19,16,16
+    db 21,31,31,31,29,17,16,18,31,31,31,31,24,16,16,16,16,23,27,31,31,31,31,26,23,18,16,16,16,16
+    db 16,21,27,31,31,31,31,31,23,16,16,25,31,31,31,31,18,16,25,28,28,25,19,16,16,16,21,29,30,22
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,16,16
+    db 16,16,16,16,16,16,16,24,21,19,20,20,20,19,22,28,23,19,20,20,20,20,25,19,20,20,20,20,19,24
+    db 27,21,19,20,20,20,20,20,19,25,22,19,20,20,20,20,22,28,30,30,30,30,30,27,24,19,19,19,19,19
+    db 18,28,25,21,23,23,23,23,22,26,31,31,27,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,24,31,31,31,31,31,17,16,16,24,30,29,25,16,16,16,18,31,31
+    db 31,31,26,16,16,16,22,31,31,31,31,31,31,31,31,31,22,16,16,21,29,31,31,31,31,31,31,31,31,17
+    db 16,22,31,31,31,31,16,23,31,31,31,31,31,18,16,21,31,31,31,31,17,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,17,27,27,27,27,27,17,17,17,18,27,27,27,27,27,27,27,27,27,17,17,24,21,19
+    db 20,20,20,19,22,28,23,19,20,20,20,20,25,19,20,20,20,20,19,24,27,21,19,20,20,20,20,20,19,25
+    db 22,19,20,20,20,20,22,27,26,26,26,26,27,27,24,20,20,20,20,20,19,28,26,22,24,24,24,24,22,26
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,27,31,31,31,31,31,28,16,16,16,16,16,16,16,16,16,17,31,31,31,31,31,18,16,17,31,31,31,31
+    db 31,31,31,31,31,31,31,17,16,31,31,31,31,31,31,30,28,31,31,18,16,20,31,31,31,31,25,30,31,31
+    db 31,31,31,30,16,25,31,31,31,31,26,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,19,26,26,26,26
+    db 26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,27,21,19,19,19,19,19,22,28,23,19,20,20
+    db 20,20,25,19,20,20,20,20,19,24,27,21,20,20,20,20,20,20,19,25,22,19,20,20,20,20,23,24,19,20
+    db 20,20,20,26,26,28,27,27,27,27,26,29,30,29,29,29,29,29,29,30,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,28,31,31,31,31,31,24,16,16
+    db 16,16,16,16,16,16,16,17,31,31,31,31,31,17,16,17,30,26,19,18,20,24,31,31,31,31,30,16,19,31
+    db 31,31,31,31,23,16,16,20,21,16,16,20,31,31,31,31,31,31,31,31,31,31,31,31,16,25,31,31,31,31
+    db 24,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,19,27,26,26,26,26,26,26,26,26,26,26,26,26,26,26
+    db 26,26,26,26,26,26,25,26,21,19,19,19,19,19,22,28,23,19,20,20,20,20,25,19,20,20,20,20,19,24
+    db 27,21,20,20,20,20,20,20,19,25,22,19,20,20,20,20,23,24,18,20,20,20,20,26,26,28,28,28,28,28
+    db 27,29,31,31,31,31,31,31,31,31,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,28,31,31,31,31,30,16,16,16,16,16,16,16,16,16,16,17,31,31
+    db 31,31,30,16,16,16,16,16,16,16,16,16,27,31,31,31,27,16,24,31,31,31,31,19,16,16,16,16,16,16
+    db 16,21,31,31,31,31,31,31,25,27,31,31,31,31,16,17,28,31,31,23,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,18,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,25,25,23,25
+    db 26,26,26,26,26,27,22,19,19,19,19,19,25,19,20,20,20,20,19,24,27,21,20,20,20,20,20,20,19,25
+    db 22,19,20,20,20,20,23,24,19,20,20,20,20,26,24,21,21,21,21,21,20,27,29,26,26,26,26,26,26,28
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,27,31,31,31,31,31,24,16,16,16,16,16,16,16,16,16,16,31,31,31,31,29,16,16,16,16,16,23,27
+    db 28,27,29,31,31,31,30,16,26,31,31,31,31,24,28,30,28,23,16,16,16,23,31,31,31,31,31,22,16,27
+    db 31,31,31,31,18,16,16,19,18,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,23,26,26,26,26
+    db 26,26,26,26,26,26,26,26,26,26,26,26,26,27,27,27,27,27,23,27,29,29,29,29,28,27,22,17,18,18
+    db 18,19,25,19,20,20,20,20,19,24,27,21,20,20,20,20,20,20,19,25,22,19,20,20,20,20,23,24,19,20
+    db 20,20,20,26,23,19,19,19,19,19,18,27,28,26,26,26,26,26,25,27,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,27,31,31,31,31,31,25,16,16
+    db 16,16,16,16,16,16,16,19,31,31,31,31,30,16,16,16,21,29,31,31,31,31,31,31,31,31,30,16,28,31
+    db 31,31,31,31,31,31,31,31,26,16,16,19,31,31,31,31,29,16,23,31,31,31,31,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,19,19,19,19,19,19,19,20,20,20,20,20,27,27
+    db 27,27,27,27,27,27,27,28,21,21,23,23,23,23,24,27,25,25,25,25,25,26,25,19,20,20,20,20,19,24
+    db 27,21,20,20,20,20,20,20,20,25,22,19,20,20,20,20,23,24,19,20,20,20,20,26,23,19,20,20,20,20
+    db 19,27,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,18,30,31,31,31,31,25,16,16,16,16,16,16,16,16,16,23,31,31
+    db 31,31,30,16,16,24,31,31,31,31,31,30,31,31,31,31,27,16,25,31,31,31,31,31,31,31,31,31,31,24
+    db 16,16,29,31,31,31,25,16,22,31,31,31,31,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,23,20,18
+    db 19,19,19,19,22,28,26,25,25,25,25,26,25,19,19,19,19,19,18,24,27,21,19,20,20,20,20,20,20,25
+    db 22,19,20,20,20,20,23,24,19,20,20,20,20,26,23,19,19,20,20,19,19,27,29,26,27,27,27,27,26,28
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,30,31,31,31,31,24,16,16,16,16,23,26,16,16,16,22,31,31,31,31,31,16,16,31,31,31,31,30
+    db 22,17,30,31,31,31,28,16,16,20,22,30,28,26,31,31,31,31,31,31,17,20,31,31,31,31,25,16,19,31
+    db 31,31,31,30,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,21,19,20,20,20,19,22,28,22,20,20,20
+    db 20,21,26,24,25,25,25,25,25,26,27,21,19,20,20,20,20,20,20,25,22,19,20,20,20,20,24,24,19,20
+    db 20,20,20,26,23,19,20,20,20,19,19,27,29,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,26,31,31,31,31,31,24,16,16
+    db 16,16,29,31,29,19,16,20,30,31,31,31,31,16,20,31,31,31,31,26,16,16,31,31,31,31,31,16,16,16
+    db 16,16,16,16,25,30,31,31,31,31,19,21,31,31,31,31,25,16,23,31,31,31,31,28,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,22,21,19,20,20,20,19,22,27,21,19,20,20,20,20,26,29,31,31,31,31,31,28
+    db 26,21,19,19,19,19,19,19,19,25,22,19,20,20,20,20,23,24,18,20,20,20,20,26,23,19,20,20,19,19
+    db 19,27,29,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,24,31,31,31,31,31,30,16,16,16,23,31,31,31,31,17,16,25,31
+    db 31,31,31,16,24,31,31,31,31,23,16,16,30,31,31,31,31,16,16,16,16,16,16,16,16,27,31,31,31,31
+    db 16,21,31,31,31,31,27,16,23,31,31,31,31,27,16,16,16,20,21,17,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,21,19
+    db 20,20,20,19,22,27,22,19,20,20,20,20,26,25,26,26,26,26,26,26,26,21,20,20,20,20,20,20,20,25
+    db 22,19,20,20,20,20,23,24,19,20,20,20,20,26,23,19,20,20,19,20,19,27,29,26,27,27,27,27,26,28
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,17,31,31,31,31,31,31,27,16,20,31,31,31,31,31,18,17,31,31,31,31,31,16,27,31,31,31,31,29
+    db 23,29,31,31,31,31,17,16,16,28,28,16,16,16,22,31,31,31,31,31,16,21,31,31,31,31,28,16,16,29
+    db 31,31,31,27,16,16,28,31,31,30,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,21,19,20,20,20,19,22,27,22,19,20,20
+    db 20,20,25,19,20,19,20,20,19,24,27,25,24,24,24,25,25,25,25,26,21,19,20,20,20,20,23,24,19,20
+    db 20,20,20,26,23,19,19,20,20,20,19,27,28,26,26,26,26,26,25,28,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,26,31,31,31,31,31,31,30
+    db 31,31,31,31,31,31,16,16,29,31,31,31,29,16,24,31,31,31,31,31,31,31,31,31,31,31,19,16,17,31
+    db 31,30,27,30,31,31,31,31,31,23,16,22,31,31,31,31,21,16,22,31,31,31,31,26,16,23,31,31,31,31
+    db 21,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,23,21,19,20,20,20,19,22,27,22,19,20,20,20,20,25,19,20,20,20,20,19,25
+    db 27,27,27,27,27,27,27,27,26,27,21,19,19,19,19,19,23,24,19,20,20,20,20,26,23,19,19,19,19,19
+    db 19,28,26,23,24,24,24,24,22,26,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,17,31,31,31,31,31,31,31,31,31,31,31,31,20,16,16,29,31
+    db 31,31,30,16,16,24,31,31,31,31,31,31,31,31,31,31,31,16,28,31,31,31,31,31,31,31,31,31,21,16
+    db 16,22,31,31,31,31,21,16,28,31,31,31,31,27,16,24,31,31,31,31,31,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,17,19,18,17,16,17,16,16,16,16,17,18,27,27,27,27,27,27,27,27,27,27,27,27,28,21,19
+    db 20,20,20,19,22,27,22,19,20,20,20,20,25,19,20,20,20,20,19,25,27,20,19,19,19,19,19,19,19,25
+    db 22,19,20,20,20,20,23,24,19,20,20,20,20,25,23,20,20,20,20,20,18,28,24,21,23,23,23,23,20,24
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,20,31,31,31,31,31,31,31,31,31,31,20,16,16,21,31,31,31,31,31,26,16,21,31,31,31,31
+    db 29,22,31,31,31,31,31,20,28,31,31,31,31,31,31,31,31,31,19,16,16,27,31,31,31,31,24,16,29,31
+    db 31,31,31,31,17,16,31,31,31,31,21,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,27,26,26,26,27,27,17
+    db 16,16,16,27,26,26,26,26,26,26,26,26,26,26,26,26,25,26,20,19,20,20,20,19,22,27,22,19,20,20
+    db 20,20,25,19,20,20,20,20,19,25,27,20,19,19,19,19,19,19,19,24,29,29,29,29,29,28,26,24,18,19
+    db 19,19,19,25,25,27,27,26,25,24,22,28,26,22,23,23,23,23,21,25,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,27,31,31,31,31
+    db 25,21,25,20,16,16,16,24,31,31,31,31,31,27,16,16,22,31,31,28,16,16,31,31,31,31,31,19,16,29
+    db 31,31,31,31,31,31,30,20,16,16,20,31,31,31,31,25,17,16,21,31,31,31,31,31,24,16,22,28,27,17
+    db 16,16,16,16,16,16,16,16,16,19,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,27,26,26,26,27,27,18,16,16,16,27,25,26,26,26,26,26
+    db 26,26,26,26,26,26,25,25,20,19,20,20,20,19,22,27,22,19,20,20,20,20,25,19,20,20,20,20,19,24
+    db 27,21,20,20,20,20,20,20,19,24,30,31,31,30,31,30,28,23,18,20,20,20,20,25,26,29,29,29,29,28
+    db 27,29,30,29,29,30,29,29,29,30,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,19,23,28,31,23,20,19,22,25,25,20,16,16,16,18,24,28
+    db 31,30,23,16,16,16,16,17,20,16,16,16,19,30,31,31,31,25,16,16,22,31,31,31,31,26,16,16,23,30
+    db 31,31,21,22,17,16,16,16,16,18,28,30,30,27,18,16,16,16,16,16,16,16,16,16,16,16,16,21,29,31
+    db 31,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,26,26,26,26,27,27,18,16,16,16,27,25,26,26,26,26,26,26,26,26,26,26,26,25,25,21,19
+    db 20,20,20,19,22,27,22,19,20,20,20,20,25,19,20,20,20,20,19,24,27,21,19,20,20,20,20,20,20,25
+    db 23,21,21,21,21,21,25,27,28,28,28,28,28,26,24,21,21,21,21,21,20,28,30,29,29,29,29,29,29,30
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,18,26,31,31,31,31,19,17,28,31,31,31,31,26,17,16,16,16,16,17,16,16,16,16,16,16,16,16,16
+    db 16,16,23,30,31,31,31,28,16,21,28,31,31,31,31,17,16,20,31,31,31,30,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,31,31,31,31,19,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,23,27,27,22,19,20,17
+    db 16,16,16,23,27,27,27,27,27,27,27,27,27,27,27,27,27,28,21,19,20,20,20,19,22,27,22,19,20,20
+    db 20,20,25,19,20,20,20,20,19,24,27,21,19,20,20,20,20,20,20,25,21,18,19,19,18,19,24,29,31,31
+    db 31,31,31,27,23,19,19,19,19,19,18,27,29,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,27,31,31,31,31,31,31,31,31
+    db 31,31,31,31,31,26,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,31,31,31,31,31,23,16,28
+    db 31,31,31,31,28,16,16,23,31,31,31,31,26,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22
+    db 28,29,28,17,16,16,18,31,31,31,31,30,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,17,16,16,16,16,16,16,16,16,17,16,17,17,17,18
+    db 17,18,18,18,17,18,17,26,21,19,20,20,20,19,22,28,22,19,20,20,20,20,25,19,20,20,20,20,19,24
+    db 27,21,19,20,20,20,20,20,20,25,22,19,20,20,19,20,25,25,24,24,24,24,24,26,23,20,20,20,20,20
+    db 19,27,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,19,31,31,31,31,31,31,31,31,31,31,31,31,31,19,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,28,31,31,31,31,23,16,24,31,31,31,31,27,16,16,23,31,31
+    db 31,31,27,16,16,16,16,16,16,16,16,16,16,16,16,16,16,19,29,31,31,31,31,16,16,16,19,31,31,31
+    db 31,31,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,23,20,19
+    db 20,20,20,19,22,28,22,19,20,20,20,20,25,19,20,20,20,20,19,24,27,21,20,20,18,18,19,20,20,26
+    db 22,18,19,19,19,19,25,23,18,19,19,19,19,25,23,20,20,20,20,20,19,27,28,26,27,27,27,27,26,28
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,23,31,31,31,31,31,24,23,31,31,31,31,31,29,18,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,28,31,31,31,31,24,16,23,31,31,31,31,29,16,16,16,24,31,31,30,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,23,31,31,31,31,28,16,16,16,16,21,30,31,31,19,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,17,16,16,16,16,16,16,16,16,17,17,16,16,16,17,17,16,16,16,16
+    db 16,16,16,16,16,16,16,16,17,17,17,17,17,17,17,16,16,24,20,18,19,19,19,18,21,28,23,19,20,20
+    db 20,20,25,19,20,20,20,20,19,24,27,21,19,20,22,23,22,19,20,25,25,24,24,24,24,24,27,23,19,20
+    db 20,20,20,25,23,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,31,31,31,31,31,16,16
+    db 27,31,31,31,31,31,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,27,31,31,31,31,24,16,23
+    db 31,31,31,31,29,16,16,16,16,17,21,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,18,31,31
+    db 31,31,26,16,16,16,16,16,16,20,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,19,20,17,16,16,16,16
+    db 21,19,16,16,16,16,16,16,19,27,27,27,27,27,27,27,27,20,20,20,20,20,20,20,21,21,27,27,27,27
+    db 27,27,27,27,27,27,27,28,22,21,22,22,22,22,24,28,23,19,19,19,19,20,25,19,20,20,20,20,19,24
+    db 27,21,19,20,29,31,27,19,20,24,29,31,30,30,30,30,28,23,19,20,20,20,20,26,23,20,20,20,20,20
+    db 19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,17,31,31,31,31,31,31,18,16,28,31,31,31,31,31,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,18,31,31,31,31,26,16,16,26,31,31,31,31,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,17,16,16,16,16,16,16,31,31,31,31,23,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,18,23,26,26,26,16,16,16,24,26,26,21,16,16,16,16,17,27,26
+    db 26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,27,26,26,27,29
+    db 29,29,29,30,29,26,23,18,19,19,19,19,25,19,20,20,20,20,19,24,27,21,19,20,28,30,27,19,20,24
+    db 29,29,29,29,29,29,27,23,19,20,20,20,20,26,23,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28
+    db 31,31,27,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,29,31,31,31,31,31,18,16,29,31,31,31,31,25,16,16,16,16,16,17,22,24,27,28,23,17,16,16
+    db 16,16,21,31,31,31,31,22,16,18,29,31,31,31,27,16,16,16,16,21,23,23,22,16,16,16,16,16,22,26
+    db 29,30,30,27,16,16,16,16,30,31,31,31,25,17,22,19,16,16,20,23,23,22,17,16,16,16,16,16,19,23
+    db 25,25,23,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,21,27,25,25,27,16,16,16,27,26,26,27,17,16,16,16,20,26,26,26,26,26,26,26,26,26,26,26,26
+    db 26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,25,27,28,27,28,29,28,27,24,21,21,21
+    db 21,22,25,19,20,20,20,20,19,24,27,21,19,20,25,27,24,19,20,24,27,27,26,27,27,27,26,23,19,20
+    db 20,20,20,26,23,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28,31,31,27,20,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,25,31,31,31,31,27,16,20
+    db 30,31,31,31,28,16,16,16,16,16,24,31,31,31,31,31,31,31,26,18,16,16,26,31,31,31,29,16,16,22
+    db 31,31,31,31,18,16,16,20,29,31,31,31,31,16,16,16,21,28,31,31,31,31,31,31,24,16,20,28,31,31
+    db 31,31,31,31,31,25,17,26,31,31,31,31,20,16,16,16,24,29,31,31,31,31,31,31,22,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,20,27,26,26,27,16,16,16,27
+    db 26,26,25,17,16,16,16,19,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26
+    db 26,26,26,26,26,26,26,26,20,19,20,20,20,20,23,27,29,30,30,30,30,30,26,19,20,20,20,20,19,24
+    db 27,21,19,20,20,20,20,19,20,25,22,19,20,20,20,20,23,24,19,20,20,20,20,26,23,20,20,20,20,20
+    db 19,28,28,26,27,27,27,27,26,28,31,31,27,26,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,26,31,31,31,31,27,22,31,31,31,31,26,16,16,16,16,16,18
+    db 31,31,31,31,31,31,31,31,31,31,20,16,25,31,31,31,31,24,16,20,31,31,31,31,29,16,16,31,31,31
+    db 31,31,27,16,16,28,31,31,31,31,31,31,31,31,31,16,25,31,31,31,31,31,31,31,31,18,25,31,31,31
+    db 31,31,16,16,16,25,31,31,31,31,31,31,31,31,22,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,17,20,27,27,20,16,16,16,22,27,27,19,16,16,16,16,16,27,27
+    db 27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,28,20,18
+    db 20,19,19,19,22,28,27,28,28,28,28,28,26,18,19,19,19,19,18,24,27,21,19,20,19,19,19,19,20,25
+    db 21,19,20,20,20,19,23,24,19,20,20,20,20,26,23,20,20,20,20,20,19,28,28,26,26,27,27,26,25,28
+    db 31,31,27,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,25,31,31,31,31,31,31,31,31,31,26,16,16,16,16,16,16,27,31,31,29,29,31,31,31,31,31,31
+    db 27,16,24,31,31,31,31,25,16,20,31,31,31,31,30,16,16,27,31,31,31,31,24,16,21,31,31,31,31,31
+    db 31,24,24,30,27,16,29,31,31,31,31,31,31,31,27,16,23,31,31,31,31,28,16,16,22,31,31,31,31,25
+    db 23,31,31,31,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,16,16,16,16,27,27,27,27,27,27
+    db 27,27,27,16,16,16,16,16,16,16,16,16,16,16,16,16,16,24,21,19,20,20,20,19,22,28,23,20,21,21
+    db 21,22,25,18,18,18,18,18,17,24,27,21,19,19,19,20,20,19,20,25,22,19,20,20,20,19,23,24,19,20
+    db 20,20,20,26,23,19,19,19,19,19,18,28,26,23,24,23,23,24,22,26,31,31,27,20,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,25,31,31,31,31,31,31,31
+    db 31,31,25,25,31,19,16,16,16,22,24,18,16,16,16,24,31,31,31,31,20,16,24,31,31,31,31,24,16,20
+    db 31,31,31,31,28,16,16,22,31,31,31,31,21,16,26,31,31,31,31,26,16,16,16,16,16,16,30,31,31,31
+    db 31,29,24,26,16,16,17,31,31,31,31,25,16,16,27,31,31,31,27,16,21,31,31,31,26,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,17,17,16,16,16,19,27,23,20,16,16,17,17,17
+    db 16,16,16,16,16,16,16,22,20,19,20,20,20,19,22,28,22,19,19,19,19,20,26,25,26,26,26,26,26,26
+    db 26,24,21,20,20,21,21,19,20,25,22,19,20,20,20,19,23,24,19,20,20,20,20,26,23,19,19,18,18,18
+    db 17,28,25,21,22,22,22,22,21,25,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,25,31,31,31,31,31,31,31,31,31,31,31,31,31,17,16,16,16
+    db 16,16,16,20,17,20,31,31,31,31,20,16,24,31,31,31,31,22,16,19,31,31,31,31,27,16,16,25,31,31
+    db 31,31,19,16,29,31,31,31,30,16,21,23,18,16,16,16,16,20,31,31,31,29,19,16,16,16,21,31,31,31
+    db 31,25,16,16,30,31,31,31,22,16,30,31,31,31,31,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,20,27,27,25,16,16,16,16,16,16,16,16,16,16,16,16,22,21,19
+    db 20,20,20,19,22,28,23,19,19,20,20,20,26,22,22,22,22,22,22,25,26,27,27,27,26,28,25,19,20,25
+    db 22,19,20,20,20,19,23,24,19,20,20,20,20,26,25,26,26,25,25,26,23,28,29,28,28,28,28,28,28,29
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,28,31,31,31,31,31,30,27,31,31,31,31,31,31,25,16,16,16,16,24,30,31,31,31,31,31,31,31
+    db 24,16,23,31,31,31,31,22,16,19,31,31,31,31,26,16,16,28,31,31,31,28,16,16,31,31,31,31,31,30
+    db 31,31,31,27,16,16,16,18,31,31,31,31,31,16,16,16,24,31,31,31,30,16,16,21,31,31,31,31,21,16
+    db 24,31,31,26,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,20,26,26,26,16,16,16,16,16,16,16,16,16,16,16,16,22,21,19,20,20,20,19,22,29,23,19,20,20
+    db 20,21,26,18,19,19,19,18,18,24,27,28,29,27,30,31,26,18,20,25,22,19,20,20,20,19,23,24,19,20
+    db 20,20,20,26,26,30,30,30,31,31,29,30,31,31,31,31,31,31,31,31,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,25,31,31,31,31,31,20,16
+    db 27,31,31,31,31,31,31,16,16,21,30,31,31,31,31,31,31,31,31,31,20,16,28,31,31,31,31,22,16,24
+    db 31,31,31,31,27,16,16,27,31,31,31,30,18,16,31,31,31,31,31,31,31,31,31,31,27,16,16,20,31,31
+    db 31,31,29,16,16,16,22,31,31,31,31,21,16,25,31,31,31,31,25,16,16,18,19,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,18,26,26,24,17,16,16,16,16
+    db 16,16,16,16,16,16,16,22,21,19,19,19,19,19,20,23,21,18,19,19,19,19,21,19,19,19,19,20,19,24
+    db 27,24,23,22,29,29,28,25,25,26,21,19,20,20,20,20,23,24,18,20,20,20,20,26,25,24,24,24,24,24
+    db 23,29,29,28,29,29,29,29,28,29,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,29,31,31,31,31,16,16,28,31,31,31,31,31,31,17,19,31
+    db 31,31,31,31,27,27,31,31,31,31,17,16,30,31,31,31,31,23,16,26,31,31,31,31,28,16,16,26,31,31
+    db 31,31,23,16,25,30,31,31,31,31,31,31,31,31,31,24,16,21,31,31,31,31,28,16,16,16,21,31,31,31
+    db 31,28,16,28,31,31,31,31,22,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,19,20,18,16,16,16,16,16,16,16,16,16,16,16,16,22,21,19
+    db 19,18,18,18,18,17,18,18,18,18,18,18,17,18,18,18,19,20,19,24,27,21,19,20,29,29,30,31,30,28
+    db 21,19,20,20,20,20,23,24,18,20,20,20,20,26,23,19,19,19,19,19,18,27,28,26,26,26,26,27,25,28
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,21,30,31,31,31,31,18,16,20,30,31,31,31,31,31,17,24,31,31,31,31,23,16,23,31,31,31,31
+    db 21,16,31,31,31,31,31,24,16,26,31,31,31,31,28,16,16,25,31,31,31,31,22,16,16,16,18,24,21,24
+    db 31,31,31,31,31,31,17,16,29,31,31,31,29,16,16,16,20,31,31,31,31,25,16,28,31,31,31,31,22,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,21,19,18,18,18,18,18,18,18,18,18,18
+    db 18,18,18,18,18,18,18,20,19,24,27,21,19,20,29,29,28,26,26,27,20,18,19,19,19,18,22,24,18,20
+    db 20,20,20,26,23,20,20,20,20,20,19,27,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,28,31,31,31,31,31,17,16
+    db 16,30,31,31,31,31,31,16,27,31,31,31,31,17,16,23,31,31,31,31,24,16,22,31,31,31,31,24,16,19
+    db 28,31,31,31,29,16,16,28,31,31,31,31,21,16,16,16,16,16,16,16,18,30,31,31,31,31,16,17,31,31
+    db 31,31,28,16,16,16,23,31,31,31,31,25,16,26,31,31,31,31,31,21,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,19,19,20,20,28,21,19,18,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,18,20,19,25
+    db 28,21,19,20,29,29,25,19,20,25,24,22,22,22,22,22,24,23,18,20,20,20,20,26,23,20,20,20,20,20
+    db 19,27,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,26,31,31,31,31,31,16,16,21,31,31,31,31,31,28,16,30,31
+    db 31,31,31,16,16,27,31,31,31,31,20,16,18,31,31,31,31,25,16,16,27,31,31,31,31,16,16,22,31,31
+    db 31,31,21,16,16,20,17,16,16,16,16,30,31,31,31,30,16,21,31,31,31,31,17,16,16,16,19,30,31,31
+    db 31,25,16,23,31,31,31,31,31,19,16,18,17,20,26,18,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,17,17,16,16,16,16,16,16,16,16,16,24,25,25,25,26,20,19
+    db 21,20,20,21,21,20,20,20,20,20,20,20,20,21,21,21,20,19,19,23,25,20,19,20,29,29,25,19,20,24
+    db 30,31,31,31,31,31,29,23,18,20,20,20,20,26,23,20,20,20,20,20,19,27,28,26,27,27,27,27,26,28
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,27,31,31,31,31,31,22,22,31,31,31,31,31,27,17,17,31,31,31,31,31,28,29,31,31,31,31,22
+    db 16,16,27,31,31,31,31,25,16,22,31,31,31,31,30,16,16,19,31,31,31,31,20,16,16,31,30,18,18,22
+    db 29,31,31,31,31,26,16,21,31,31,31,31,27,18,16,16,16,29,31,31,31,24,16,21,31,31,31,31,31,29
+    db 30,31,31,31,31,18,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,20,27,28,25,16,16,16,16,16,16,20,18,16,17,17,17,17,17,17,29,31,31,31,31,31,31,31,31,30
+    db 30,30,30,30,31,31,25,17,18,17,17,18,17,18,29,29,26,20,22,25,29,30,30,30,30,29,28,23,18,19
+    db 19,19,19,26,24,20,20,20,20,20,19,27,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,29,31,31,31,31,31,31,31
+    db 31,31,31,31,31,24,16,17,25,31,31,31,31,31,31,31,31,31,31,28,18,16,20,31,31,31,31,21,16,16
+    db 31,31,31,31,25,16,16,29,31,31,31,31,19,16,24,31,31,31,31,31,31,31,31,31,25,18,16,21,31,31
+    db 31,31,31,19,16,16,24,31,31,31,31,24,16,17,23,29,31,31,31,31,31,31,31,31,31,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,27,24,23,26,20,16,16,16,16
+    db 16,21,27,17,17,17,17,17,17,17,29,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,25,17,18,18
+    db 18,18,17,18,28,29,28,28,28,29,29,27,26,21,20,20,23,23,17,19,19,19,18,26,24,20,20,20,20,20
+    db 19,28,29,27,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,21,31,31,31,31,31,31,31,31,31,31,31,31,31,22,16,16,16,31
+    db 31,31,31,31,31,29,31,31,31,31,24,16,25,31,31,31,31,26,16,20,31,31,31,31,30,18,16,29,31,31
+    db 31,31,20,16,31,31,31,31,31,31,31,31,31,31,17,16,16,24,31,31,31,31,31,26,16,16,26,31,31,31
+    db 31,27,16,16,16,31,31,31,31,31,31,31,31,31,21,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,27,23,22,25,21,16,16,16,16,16,22,28,17,18,18,18,18,18,17
+    db 29,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,24,17,18,18,18,18,17,18,29,29,29,29,29,29
+    db 29,27,26,20,19,19,21,28,29,29,29,29,29,27,23,20,20,20,20,20,19,27,30,28,28,28,28,28,28,29
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,20,31,31,31,31,31,31,31,31,31,31,31,29,19,16,16,16,16,23,31,31,31,31,18,25,31,31,31,31
+    db 30,16,30,31,31,31,31,31,17,25,31,31,31,31,31,29,16,30,31,31,31,31,31,16,28,31,31,31,31,31
+    db 31,31,31,28,18,16,16,26,31,31,31,31,31,31,24,16,28,31,31,31,31,31,20,16,16,23,31,31,31,31
+    db 31,31,31,25,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 17,27,21,21,25,22,16,16,16,16,16,22,28,17,18,18,18,18,18,19,29,31,31,31,31,31,31,31,31,31
+    db 31,31,31,31,31,31,25,17,18,18,18,18,18,18,29,29,29,29,29,29,29,27,26,21,19,19,21,29,31,31
+    db 31,31,31,27,23,19,19,19,19,19,18,28,26,23,24,24,24,24,23,27,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,18,26,31,31,25,20,25,31
+    db 31,29,27,19,16,16,16,16,16,22,30,31,31,18,16,25,31,31,31,28,23,16,29,31,31,31,31,27,17,24
+    db 31,31,31,31,30,22,16,29,31,31,31,31,26,16,16,26,31,31,31,30,31,30,22,16,16,16,16,18,29,31
+    db 31,31,31,29,17,16,29,31,31,31,31,27,19,16,16,16,20,29,31,31,28,27,24,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,18,25,25,19,17,16,16,16,16
+    db 16,23,28,17,18,17,23,28,27,28,30,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,28,23,24,24
+    db 24,24,24,22,21,21,21,22,23,23,23,26,27,21,19,19,22,25,22,23,22,23,23,26,23,18,18,18,18,18
+    db 17,28,24,19,21,21,21,20,19,25,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,18,24,21,21,25,30,24,19,29,30,28,16,16,18,29,31
+    db 31,31,31,16,16,16,19,23,19,16,16,16,17,21,25,26,22,16,16,16,19,23,26,24,17,16,16,17,23,26
+    db 22,17,16,16,16,16,18,21,18,16,20,16,16,16,16,16,16,16,16,21,27,25,21,16,18,27,31,31,31,31
+    db 23,16,16,16,16,16,16,16,20,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,18,27,17,16,16,16,16,16,16,23,28,17,18,17,25,31,31,31
+    db 31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,29,25,26,26,26,26,26,24,18,17,17,18,20,19
+    db 19,25,27,21,19,19,23,23,18,19,19,19,19,25,26,25,25,25,25,25,24,29,28,27,27,27,27,27,26,29
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,21,28,31,31,31,31,30,30,31,31,31,16,16,26,31,31,31,31,31,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,26,31,31,31,31,31,19,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,17,25,26,26,26,16,16,16,24,26,26,21,16,17,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26
+    db 26,26,26,26,26,26,26,26,26,17,16,23,28,17,18,17,25,31,31,31,31,31,31,31,31,31,31,31,31,31
+    db 31,31,31,31,31,31,29,25,26,26,26,26,26,24,18,18,17,19,20,19,20,27,28,21,19,19,24,24,18,20
+    db 19,19,19,26,26,27,27,27,26,26,25,29,31,31,31,31,31,31,31,31,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,20,31,31,31,31,31,31
+    db 31,31,31,31,29,16,16,22,31,31,31,31,28,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,18,31,31,31,31,28,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,20,27,25,25,27,16,16,16,27
+    db 26,26,26,18,17,26,25,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,19
+    db 17,26,28,16,17,16,24,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,28,25,26,26
+    db 26,26,26,24,18,17,17,18,20,19,21,28,29,21,19,19,23,24,19,20,20,20,19,26,24,21,21,21,21,21
+    db 20,28,29,28,28,28,28,28,28,29,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,29,31,31,31,31,31,29,30,31,31,31,30,16,16,18,31,31
+    db 31,31,21,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,30,31,31,31,18
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,19,27,25,25,27,17,16,16,27,26,26,27,27,27,26,26,26,26,26
+    db 26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,27,28,22,23,22,27,30,30,30
+    db 31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,29,25,26,26,26,26,26,25,21,22,21,21,20,20
+    db 19,27,29,24,23,23,25,23,19,20,20,20,19,26,24,19,19,19,19,19,19,27,28,26,27,26,26,27,25,28
+    db 31,31,28,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,21,31,31,31,31,31,26,16,16,23,31,31,31,19,16,18,31,31,31,31,28,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,19,31,31,31,31,29,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,18,26,26,26,25,16,16,16,23,26,26,21,18,17,27,26,26,26,26,26,26,26,26,26,26,26,26,26,26
+    db 26,26,26,26,26,26,26,26,26,22,21,21,24,31,31,31,30,29,29,29,30,31,31,31,31,31,31,31,31,31
+    db 31,31,31,31,31,31,29,25,26,26,26,26,26,26,27,27,28,24,18,19,16,25,30,29,29,29,28,23,18,19
+    db 19,20,20,26,24,20,20,20,20,20,19,27,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,29,31,31,31,31,27,16,16
+    db 16,16,21,31,25,16,16,18,31,31,31,31,28,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,18,31,31,31,31,31,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,26,19
+    db 17,17,19,30,29,29,29,29,29,29,30,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,29,25,26,26
+    db 26,26,26,26,26,26,26,23,17,18,16,26,30,29,29,28,27,24,21,22,22,20,19,26,24,20,20,20,20,20
+    db 19,27,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,20,31,31,31,31,31,24,17,16,16,16,16,18,16,16,16,21,31,31
+    db 31,31,24,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,16,16,16,16,16,16,16,16,16,17,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,21,26,28,27,23,17,16,16,16,16,16,16,31,31,31,31,27
+    db 16,16,16,16,16,16,16,17,17,16,16,16,16,16,16,16,16,17,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,18,24,27,27,25,19,16,16,21,24,21,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,27,19,18,17,19,30,29,29,29,29,29,29
+    db 30,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,29,25,26,26,26,26,26,26,26,26,26,23,17,18
+    db 16,26,30,29,29,29,26,27,29,29,29,22,19,26,24,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,28,31,31,31,31,31,31,31,28,18,16,16,16,16,16,16,23,31,31,31,31,22,16,21,26,27,24,17,16
+    db 16,16,16,16,16,22,27,30,31,29,22,16,16,16,16,16,23,30,31,27,17,16,16,16,16,16,16,16,16,16
+    db 16,16,23,31,31,31,31,31,17,16,16,19,24,26,28,31,31,31,31,24,16,16,16,16,18,26,29,31,31,25
+    db 16,16,16,16,16,21,29,31,29,21,16,16,16,16,16,16,16,16,16,16,16,18,31,31,31,31,31,22,18,29
+    db 31,31,31,22,16,22,26,29,29,18,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,17,26,19,17,17,19,30,29,29,29,29,29,29,31,31,31,31,31,31,31,31,31,31
+    db 31,31,31,31,31,31,29,25,26,26,26,26,26,26,26,26,26,23,17,18,16,25,29,28,28,28,26,27,30,29
+    db 29,21,19,26,24,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,27,31,31,31,31,31,31,31,31
+    db 31,22,16,16,16,16,16,20,31,31,31,31,19,17,31,31,31,31,30,17,16,16,16,16,25,31,31,31,31,31
+    db 31,23,16,16,16,24,31,31,31,31,19,16,16,16,19,26,30,28,26,18,16,16,24,31,31,31,31,25,16,16
+    db 21,31,31,31,31,31,31,31,31,26,16,16,16,20,31,31,31,31,31,31,27,16,16,16,18,31,31,31,31,26
+    db 16,16,16,16,23,29,29,27,21,16,16,18,31,31,31,31,31,16,27,31,31,31,31,19,19,31,31,31,31,31
+    db 19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,20,22,26,26,24,19
+    db 18,17,20,29,28,27,28,29,29,29,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,29,25,26,25
+    db 29,30,29,29,29,28,29,24,17,18,17,19,20,20,20,21,24,28,30,29,27,19,17,25,24,20,20,20,20,20
+    db 19,28,28,26,27,26,26,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,17,31,31,31,31,31,31,31,31,31,31,29,22,16,16,16,18,31,31
+    db 31,31,22,25,31,31,31,31,31,29,16,16,16,25,31,31,31,31,31,31,28,22,16,16,23,31,31,31,31,31
+    db 17,16,16,25,31,31,31,31,31,22,16,16,20,31,31,31,31,18,16,25,31,31,31,31,31,31,31,31,31,29
+    db 16,16,20,31,31,31,31,31,31,29,24,16,16,18,31,31,31,31,31,23,16,16,20,30,31,31,31,31,30,16
+    db 16,16,29,31,31,31,26,16,23,31,31,31,31,19,29,31,31,31,31,31,30,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,20,24,19,19,19,18,24,26,25,25,27,27,26,28,30,29,29
+    db 31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,29,25,26,25,30,31,31,31,31,31,31,25,17,18
+    db 18,18,18,18,18,19,23,28,29,29,28,27,26,26,24,19,19,19,19,19,19,28,25,22,23,23,23,23,21,25
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,20,31,31,31,31,31,31,31,31,31,31,31,19,16,16,17,31,31,31,31,31,31,31,31,31,31,31,31
+    db 19,16,18,31,31,31,31,31,23,16,16,16,16,16,24,31,31,31,31,31,17,16,17,31,31,31,31,31,31,23
+    db 16,16,22,31,31,31,31,16,23,31,31,31,31,29,23,31,31,31,31,27,16,16,31,31,31,31,31,27,17,16
+    db 16,16,16,18,31,31,31,31,31,23,16,16,27,31,31,31,31,31,29,16,16,17,30,31,31,31,22,16,19,31
+    db 31,31,31,29,31,31,31,31,31,31,30,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,22,23,17,17,18,16,25,28,27,27,27,27,26,28,30,29,29,31,31,31,31,31,31,31,31,31,31
+    db 31,31,31,31,31,31,29,25,26,25,30,31,31,31,31,31,31,25,17,18,18,18,18,18,19,20,23,27,30,29
+    db 30,31,31,27,24,19,19,19,19,19,19,28,25,22,23,23,23,23,21,25,31,31,27,20,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,18,21,30,31,31,31,31
+    db 31,31,31,31,31,18,16,18,31,31,31,31,31,31,27,25,31,31,31,31,20,16,22,31,31,31,31,22,16,21
+    db 29,30,30,19,16,30,31,31,31,31,24,16,18,31,31,31,31,31,31,25,16,16,27,31,31,31,20,16,31,31
+    db 31,31,31,16,16,31,31,31,31,27,16,19,31,31,31,31,25,16,16,27,30,30,25,16,23,31,31,31,31,28
+    db 16,16,27,31,31,31,31,31,31,16,16,20,31,31,31,24,16,16,18,31,31,31,31,31,31,25,27,31,31,31
+    db 28,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,21,23,17,18,18,16,25
+    db 27,27,27,27,27,26,28,30,29,29,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,29,25,26,25
+    db 30,31,31,31,31,31,31,25,17,18,18,18,18,19,26,26,27,27,27,27,25,24,24,26,26,27,27,27,27,27
+    db 25,29,29,28,29,29,29,29,28,29,31,31,27,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,30,31,31,31,31,31,31,31,31,31,25,16,19,31,31
+    db 31,31,31,28,16,22,31,31,31,31,20,16,29,31,31,31,27,16,21,31,31,31,31,20,16,31,31,31,31,31
+    db 21,16,16,29,31,31,31,31,31,31,16,16,28,31,31,31,20,17,31,31,31,31,31,16,16,31,31,31,31,26
+    db 16,26,31,31,31,29,16,16,30,31,31,31,30,16,26,31,31,31,31,27,16,16,25,31,31,31,31,31,31,22
+    db 16,22,31,31,31,28,16,16,17,31,31,31,31,31,25,16,25,31,31,31,29,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,20,23,17,18,18,16,26,28,28,28,27,27,26,28,30,29,29
+    db 31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,29,25,26,25,30,31,31,31,31,31,31,25,17,18
+    db 18,18,18,19,30,29,29,27,25,26,22,19,20,26,27,30,30,30,30,30,28,29,31,31,31,31,31,31,31,31
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,20,23,27,31,31,31,31,31,31,31,29,16,18,31,31,31,31,31,16,18,31,31,31,31,26
+    db 17,18,31,31,31,31,20,16,27,31,31,31,31,28,16,29,31,31,31,31,20,16,24,31,31,31,31,31,31,27
+    db 16,17,31,31,31,31,18,18,31,31,31,31,28,16,16,31,31,31,31,25,16,31,31,31,31,25,16,20,31,31
+    db 31,31,31,18,22,31,31,31,31,26,16,18,31,31,31,31,31,31,31,18,16,26,31,31,31,24,16,16,19,31
+    db 31,31,31,30,16,17,31,31,31,30,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,18,18,18,18,17,17,17,17,17,18,18,18
+    db 18,18,19,23,23,17,18,18,17,24,26,25,25,27,27,26,28,29,29,29,28,28,28,28,28,28,28,28,28,28
+    db 28,28,28,28,28,28,27,25,26,26,28,28,28,28,28,28,29,24,17,18,18,18,18,19,29,29,29,28,27,28
+    db 25,24,24,26,24,23,23,23,23,23,23,29,29,28,28,28,28,28,28,29,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,31
+    db 31,31,31,31,31,31,16,16,25,31,31,31,29,16,20,31,31,31,31,18,16,25,31,31,31,31,20,16,16,30
+    db 31,31,31,31,18,21,31,31,31,31,21,16,30,31,31,31,31,31,31,28,16,17,31,31,31,30,16,16,29,31
+    db 31,31,21,16,23,31,31,31,31,26,18,31,31,31,31,25,16,16,24,31,31,31,31,26,16,31,31,31,31,28
+    db 16,22,31,31,31,31,31,31,31,19,16,26,31,31,31,16,16,16,19,31,31,31,31,27,16,21,31,31,31,30
+    db 21,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,27,27,27,27,27,27,27,27,27,26,27,27,27,27,27,28,23,17,18,18,17,21
+    db 23,22,22,27,27,26,28,29,29,29,26,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,26,26,26,26
+    db 26,25,25,25,25,25,27,23,17,18,18,18,18,19,29,29,29,29,29,29,28,28,29,27,23,19,19,19,19,19
+    db 18,28,27,25,26,26,26,26,25,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,18,19,16,16,16,16,23,31,31,31,31,31,31,16,17,29,31
+    db 31,31,27,16,17,31,31,31,31,30,16,25,31,31,31,31,18,16,18,30,31,31,31,29,17,20,31,31,31,31
+    db 21,16,31,31,31,31,31,31,31,31,16,17,30,31,31,26,16,23,31,31,31,31,26,16,21,31,31,31,31,25
+    db 18,31,31,31,31,24,16,16,26,31,31,31,31,22,16,30,31,31,31,27,16,27,31,31,31,31,31,31,31,22
+    db 16,26,31,31,28,16,16,16,16,29,31,31,31,27,16,17,29,31,31,31,30,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,26,25
+    db 26,26,26,26,26,26,26,26,26,26,26,26,26,26,23,17,18,18,17,22,23,22,22,27,27,26,28,29,29,29
+    db 26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,27,24,17,18
+    db 18,18,18,19,29,29,29,29,29,29,29,29,29,27,23,20,20,20,20,19,19,28,28,26,27,27,27,27,26,28
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,23,31,25,16,16,16,16,16,29,31,31,31,31,31,16,19,31,31,31,31,28,16,19,31,31,31,31,31
+    db 16,25,31,31,31,31,28,16,19,31,31,31,31,27,16,18,31,31,31,31,24,18,31,31,31,29,31,31,31,31
+    db 16,21,31,31,31,21,16,28,31,31,31,31,27,16,17,31,31,31,29,16,19,31,31,31,31,29,18,16,28,31
+    db 31,31,31,18,16,29,31,31,31,28,18,31,31,31,29,31,31,31,31,19,16,31,31,31,24,16,16,16,20,31
+    db 31,31,31,30,16,16,28,31,31,31,26,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,26,25,26,26,26,26,26,26,26,26,26,26
+    db 26,26,26,26,23,17,18,18,17,22,23,22,22,27,27,26,28,30,29,29,26,26,26,26,26,26,26,26,26,26
+    db 26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,27,24,17,18,18,18,18,19,29,29,29,29,29,29
+    db 29,29,29,27,23,20,20,20,20,19,19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,23,31,31,29,16,16,16,16,16
+    db 30,31,31,31,31,31,16,19,31,31,31,31,28,16,22,31,31,31,31,30,16,23,31,31,31,31,31,17,16,27
+    db 31,31,31,31,17,16,31,31,31,31,31,31,31,31,22,17,31,31,31,31,22,26,31,31,31,19,16,22,31,31
+    db 31,31,30,19,26,31,31,31,29,16,18,31,31,31,31,31,20,16,20,31,31,31,31,25,16,30,31,31,31,31
+    db 31,31,31,30,17,30,31,31,31,25,24,31,31,31,22,16,16,16,21,31,31,31,31,30,16,16,31,31,31,31
+    db 28,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,17,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,27,23,17,18,18,17,22
+    db 23,22,22,27,27,26,28,30,29,30,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26
+    db 26,26,26,26,26,26,27,24,17,18,18,18,18,19,29,29,29,28,27,27,28,29,29,27,23,20,20,20,20,19
+    db 19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,24,31,31,31,23,16,16,16,28,31,31,31,31,31,25,16,20,31,31
+    db 31,31,31,16,16,27,31,31,31,29,16,22,31,31,31,31,28,16,16,28,31,31,31,30,16,16,20,31,31,31
+    db 31,31,31,31,17,16,31,31,31,31,31,31,31,31,31,16,16,16,28,31,31,31,31,31,31,31,31,31,31,23
+    db 16,31,31,31,31,31,16,16,21,31,31,31,31,21,16,19,28,31,31,31,31,31,31,25,16,31,31,31,31,31
+    db 31,31,31,31,21,16,16,16,19,31,31,31,31,24,16,18,31,31,31,31,31,17,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,27,27,27,27,27,27,27,27,27,27,28,23,17,18,18,17,22,23,22,22,27,27,27,27,27,27,27
+    db 26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,27,23,17,18
+    db 18,18,18,19,29,29,30,26,20,21,25,29,29,27,23,20,20,20,20,19,19,28,28,26,27,27,27,27,26,28
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,22,31,31,31,31,30,26,28,31,31,31,31,31,29,16,16,20,31,31,31,31,26,16,17,28,31,31,31,28
+    db 16,19,31,31,31,31,31,16,16,31,31,31,31,28,16,16,17,31,31,31,31,31,31,31,16,16,30,31,31,31
+    db 31,31,31,31,29,16,16,21,31,31,31,31,31,31,31,31,31,31,31,24,16,31,31,31,31,31,20,16,25,31
+    db 31,31,31,18,16,16,29,31,31,31,31,31,31,21,16,28,31,31,31,31,31,31,31,31,19,16,16,16,18,31
+    db 31,31,31,24,16,19,31,31,31,31,27,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,17,17,17,17,17,16,17,17
+    db 17,17,17,28,23,17,18,18,17,22,23,22,22,27,27,27,27,27,27,27,26,26,26,26,26,26,26,26,26,26
+    db 26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,27,23,17,18,18,18,18,19,29,29,30,26,20,20
+    db 25,29,29,27,23,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,20,31,31,31,31,31,31,31,31
+    db 31,31,31,30,16,16,16,19,31,31,31,31,23,16,25,31,31,31,31,29,16,16,19,27,31,31,31,30,29,31
+    db 31,31,31,20,16,16,19,31,31,31,31,31,31,25,16,16,21,31,31,31,31,31,31,31,26,16,16,18,31,31
+    db 31,31,31,31,24,30,31,31,31,28,16,18,22,31,31,31,31,28,31,31,31,31,26,16,16,17,31,31,31,31
+    db 31,31,31,16,16,18,31,31,31,31,31,31,31,31,17,16,16,16,16,31,31,31,31,28,16,16,22,31,31,31
+    db 29,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,28,23,17,18,18,17,22
+    db 23,22,22,27,27,27,27,27,27,27,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26
+    db 26,26,26,26,26,26,27,23,17,18,18,18,18,19,29,29,30,26,20,20,25,29,29,27,23,20,20,20,20,20
+    db 19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,17,31,31,31,31,31,31,31,31,31,31,31,19,16,16,16,23,31,31
+    db 31,31,29,16,27,31,31,31,31,31,17,16,16,31,31,31,31,31,31,31,31,31,22,16,16,16,16,30,31,31
+    db 31,31,31,22,16,16,24,31,31,31,31,31,31,27,17,16,16,16,24,31,31,31,31,23,16,31,31,31,31,31
+    db 17,16,24,31,31,31,31,31,31,31,31,27,16,16,16,16,26,31,31,31,31,31,29,16,16,21,31,31,31,31
+    db 31,31,31,20,16,16,16,16,20,31,31,31,31,28,16,16,26,31,31,31,31,19,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,17,16,16,16,16,16,17,28,23,17,18,18,17,22,23,22,22,27,27,27,27,27,27,27
+    db 26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,27,23,17,18
+    db 18,18,18,19,29,29,30,26,21,21,25,29,29,27,23,20,20,20,20,20,19,28,29,27,28,27,27,27,26,28
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,23,30,31,31,31,31,31,28,31,31,20,16,16,16,16,30,31,31,31,30,21,16,22,31,31,31,31,31
+    db 27,16,16,24,31,31,31,31,31,31,30,23,16,16,16,16,16,27,31,31,31,31,28,18,16,16,23,31,31,31
+    db 31,31,27,16,16,16,16,16,16,26,31,31,31,16,19,31,31,31,31,31,27,16,20,30,31,31,31,31,31,30
+    db 26,16,16,16,16,16,21,31,31,31,31,30,22,16,16,20,31,31,31,31,31,30,20,16,16,16,16,16,25,31
+    db 31,31,31,30,16,17,31,31,31,31,31,27,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,26,26,26,26,17,16,16,19,26
+    db 26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26
+    db 26,26,26,26,22,17,18,18,17,22,23,23,23,24,24,23,25,27,27,27,25,25,25,25,25,25,25,25,25,25
+    db 25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,26,22,18,18,18,18,18,19,29,29,29,28,26,27
+    db 28,29,29,26,23,19,19,19,19,19,19,28,27,24,25,24,24,24,23,27,31,31,27,20,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,20,23,25,26,25,16
+    db 20,19,16,16,16,16,16,24,27,27,23,16,16,16,16,21,31,31,31,31,23,16,16,16,21,28,30,31,30,18
+    db 16,16,16,16,16,16,16,16,21,24,27,23,16,16,16,16,16,20,25,27,27,20,16,16,16,16,16,16,16,16
+    db 20,23,22,16,16,29,31,31,31,31,23,16,16,17,25,29,31,31,22,16,16,16,16,16,16,16,16,19,23,27
+    db 25,16,16,16,16,16,18,23,27,28,22,16,16,16,16,16,16,16,23,31,31,31,27,21,16,16,31,31,31,31
+    db 31,27,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,19,27,25,25,26,18,17,16,21,26,26,26,26,26,26,26,26,26,26,26
+    db 26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,25,21,17,18,18,17,22
+    db 23,23,23,22,22,22,25,27,27,27,25,25,25,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24
+    db 24,24,24,24,24,24,26,22,18,18,18,18,18,19,29,29,29,29,29,29,29,29,29,26,23,19,19,19,19,18
+    db 17,28,25,21,22,21,21,21,20,25,31,31,27,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,17,21,21,19,16,16,16,16,16,16,16,17,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,23,25,24,18
+    db 16,16,16,16,16,16,17,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,17,20,19,16,16,16,16,21,25,27,25,21,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 19,27,25,25,26,27,17,17,22,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26
+    db 26,26,26,26,26,26,26,26,26,26,26,26,26,25,22,17,18,18,17,22,23,23,23,23,23,22,25,28,27,27
+    db 25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,26,22,18,18
+    db 18,18,18,19,29,29,29,29,28,29,28,29,29,26,25,25,25,25,25,25,23,29,28,26,27,27,27,26,26,29
+    db 31,31,27,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,26,26,26,27,17,17,16,19,26
+    db 26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26
+    db 26,26,26,27,23,17,18,18,17,22,23,23,23,23,23,22,26,28,27,27,25,24,25,25,24,24,24,24,24,24
+    db 24,24,24,24,24,24,25,25,25,25,25,25,25,25,25,25,26,22,18,18,18,18,18,19,31,30,29,29,30,30
+    db 30,30,30,26,24,25,25,25,25,25,24,28,31,30,30,30,30,30,29,30,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,17,17,16,16,16,16,16,17,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,23,23,17,18,18,17,22
+    db 23,23,23,23,23,23,24,25,25,25,25,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,25,25,25,25
+    db 25,25,25,25,25,25,26,22,17,18,18,18,18,19,26,26,27,27,26,27,27,27,27,26,23,19,19,19,19,19
+    db 18,27,29,26,27,27,27,26,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,21,23,17,18,18,17,22,23,23,23,23,23,23,23,22,22,22
+    db 26,27,27,27,27,27,27,27,27,27,27,27,27,27,27,28,26,24,25,25,25,25,25,25,25,25,26,22,17,18
+    db 18,18,18,18,18,18,23,24,18,19,19,19,19,25,23,20,20,20,20,20,19,28,29,26,27,27,27,27,26,28
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,21,23,17,18,18,17,22,23,23,23,23,23,23,23,23,23,23,27,27,27,27,27,27,27,27,27,27
+    db 27,27,27,27,27,27,26,24,25,25,25,25,25,25,25,25,26,22,18,18,18,18,18,18,18,18,23,25,20,21
+    db 21,21,21,26,23,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,20,23,17,18,18,17,22
+    db 23,23,23,23,23,23,23,23,23,23,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,26,24,25,25
+    db 25,25,25,25,25,25,26,22,17,18,18,18,18,18,21,21,23,28,30,29,29,29,30,26,23,20,20,20,20,20
+    db 19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,20,23,18,18,19,18,22,23,23,23,23,23,23,23,23,23,23
+    db 27,27,26,26,26,26,26,26,26,26,26,26,26,26,26,27,26,24,25,25,25,25,25,25,25,25,26,22,17,18
+    db 18,18,18,19,28,28,26,28,30,30,30,30,30,26,23,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,17,26,27,26,24,21,21,21,21,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23
+    db 23,23,23,23,23,24,25,25,25,25,25,25,25,25,25,25,26,22,17,18,18,18,18,19,29,29,28,24,19,20
+    db 20,20,19,25,24,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,19,19,19,28,20
+    db 18,18,19,23,23,23,23,23,23,23,22,22,22,22,22,22,22,23,23,22,23,23,23,23,23,22,24,25,25,25
+    db 25,25,25,25,25,25,26,22,17,18,18,19,19,20,29,29,28,23,18,19,19,19,19,25,24,20,20,20,20,20
+    db 19,27,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,28,19,17,17,18,23,23,23,23,23,23,23
+    db 23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,22,23,25,25,25,25,25,25,25,25,25,26,22,17,18
+    db 17,24,27,26,29,29,28,23,19,20,20,20,20,26,23,20,20,20,20,20,19,27,28,26,27,27,27,27,26,28
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,27,19,18,18,19,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23
+    db 23,23,23,23,23,22,23,25,25,25,25,25,25,25,25,25,26,22,17,18,17,27,30,29,29,29,28,23,19,20
+    db 20,20,20,26,23,19,19,19,19,19,18,28,25,23,24,24,24,24,23,26,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,17,16,16,16,16,27,19
+    db 17,18,18,22,21,21,22,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,22,23,25,25,25
+    db 25,25,25,24,23,23,24,21,17,18,16,26,30,29,30,30,28,23,19,20,20,20,20,26,23,19,19,19,19,19
+    db 18,28,24,21,22,22,22,22,20,25,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,24,25,25,25,18,16,17,27,19,17,18,18,19,19,18,21,24,23,23
+    db 23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,22,23,25,25,25,25,25,25,22,19,19,19,19,18,18
+    db 17,23,25,24,24,24,25,23,18,20,20,20,20,26,25,23,23,23,23,23,22,29,28,26,27,27,27,27,26,28
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 17,27,22,22,25,24,17,16,27,19,18,18,18,18,18,17,21,24,23,23,23,23,23,23,23,23,23,23,23,23
+    db 23,23,23,23,23,22,23,25,25,25,25,25,25,22,18,18,18,18,18,18,18,18,18,18,18,18,22,24,18,20
+    db 20,20,20,26,27,30,30,30,30,30,28,29,31,31,31,31,31,31,31,31,31,31,28,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,27,22,22,26,28,17,16,18,19
+    db 17,17,17,18,18,17,21,24,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,22,23,25,25,25
+    db 25,25,25,22,18,18,18,18,18,18,18,18,18,18,18,18,22,24,19,20,20,20,20,26,26,26,26,26,26,26
+    db 24,28,30,30,30,30,30,30,30,30,31,31,28,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,27,24,23,26,20,17,16,18,21,20,20,20,18,18,17,20,23,21,22
+    db 23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,21,18,18,18,18,18,18
+    db 18,18,18,18,18,18,22,24,19,20,20,20,20,26,22,19,20,20,20,19,19,27,28,26,27,27,27,27,26,28
+    db 31,31,28,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,18,19,18,16,16,16,16,17,20,28,29,27,17,18,18,18,18,18,18,23,23,23,23,23,23,23,23,23,23
+    db 23,23,23,23,23,23,20,16,17,17,17,17,17,18,18,18,18,18,18,18,18,18,18,18,18,18,23,24,19,20
+    db 20,20,20,26,23,20,20,20,20,20,19,27,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17
+    db 17,24,28,17,18,18,18,18,18,18,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,20,17,17,17
+    db 17,17,17,18,18,18,18,18,18,18,18,18,18,18,18,18,23,24,18,20,20,20,20,26,23,20,20,20,20,20
+    db 19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,20,27,17,18,18,18,18,18,18
+    db 23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,20,17,18,18,18,18,18,18,18,18,18,18,18,18
+    db 18,18,18,18,19,19,23,24,18,20,20,20,20,26,23,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28
+    db 31,31,28,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,20,27,17,18,18,18,18,18,18,23,23,23,23,23,23,23,23,23,23
+    db 23,23,23,23,23,23,20,17,18,18,18,18,18,18,18,18,18,18,18,18,18,17,18,18,19,19,23,24,18,20
+    db 20,20,20,26,23,20,20,20,20,20,19,27,28,26,27,27,27,27,26,28,31,31,28,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,17,20,26,26,26,26,27,21,18,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19,19
+    db 19,19,19,19,18,18,18,18,18,18,20,27,28,27,28,27,27,23,18,20,20,20,19,26,23,20,20,20,20,20
+    db 19,27,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,28,28,28,29,30,21,18
+    db 18,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,18,20,19,20,20,20,20,20,18,18,18,18,18,18
+    db 21,27,28,27,27,26,27,23,17,19,18,19,19,26,23,20,20,20,20,20,19,27,28,26,27,27,27,27,26,28
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,17,17,16,16,16,16,16,17,17,16,16,16,17,18,17,17,17,18,18,18,18,18,18,18,18,18,18
+    db 17,17,17,18,17,17,17,17,17,17,17,17,17,27,27,27,27,28,21,18,18,18,18,18,18,18,18,18,18,18
+    db 18,18,18,18,18,18,18,19,19,20,20,20,20,20,18,18,18,18,18,18,20,21,21,21,21,21,24,26,25,25
+    db 25,25,25,26,23,19,19,19,19,19,19,28,26,24,25,25,25,25,24,27,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,21,27,26,22,16,16,16,21
+    db 26,26,19,17,16,27,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,27,26,26,26,26,26,27,27
+    db 27,27,26,26,26,26,26,27,20,18,17,17,17,17,17,17,17,18,18,18,18,18,17,17,17,17,18,19,19,20
+    db 20,19,20,20,18,18,18,18,18,18,19,20,20,20,20,19,22,29,31,31,31,31,31,27,22,19,19,19,19,19
+    db 18,28,24,21,22,22,22,22,20,25,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,20,27,26,26,27,17,16,16,27,25,26,27,27,27,26,26,26,26,26
+    db 26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,25,25,22,22
+    db 22,22,22,22,22,22,19,17,18,18,18,18,20,18,18,18,19,19,19,20,20,19,19,19,18,18,18,18,18,18
+    db 19,20,20,20,20,19,22,27,26,27,27,27,27,27,24,23,23,23,23,22,21,28,27,25,26,26,26,26,25,27
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,20,27,25,26,27,17,16,16,27,25,26,27,27,27,26,25,26,26,26,26,26,26,26,26,26,26,26,26,26
+    db 26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,25,24,26,29,30,30,30,30,28,27,24,22,23,23
+    db 23,23,25,19,19,19,19,19,19,20,20,18,18,18,18,18,18,18,18,18,19,20,20,20,20,19,23,24,18,19
+    db 19,19,19,25,27,29,29,29,29,29,27,29,31,31,31,31,31,31,31,31,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,18,27,26,26,27,16,16,16,27
+    db 26,26,23,18,18,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26
+    db 26,26,26,26,26,26,26,26,23,26,27,27,27,27,27,25,28,31,31,31,31,31,25,19,19,19,19,19,19,19
+    db 19,18,18,18,18,18,18,19,18,19,20,20,20,20,20,20,24,24,18,20,20,20,20,26,26,26,27,27,26,26
+    db 25,29,30,30,30,30,30,30,30,30,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,27,27,27,27,27,27,27,27,27,27,27,27,27,28,20,19
+    db 20,20,20,20,22,26,26,29,28,28,28,28,26,20,21,21,21,21,21,21,20,19,18,18,18,18,19,20,19,23
+    db 21,19,20,20,20,20,24,24,18,20,20,20,20,26,22,20,20,20,20,20,19,27,28,26,27,27,27,27,26,28
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,20,19,20,20,20,19,22,27,22,20,20,20
+    db 20,20,26,29,30,30,30,30,30,27,26,20,18,18,18,18,19,20,19,24,22,19,20,20,20,20,24,24,18,20
+    db 20,20,20,26,22,19,20,20,19,19,19,27,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,22,20,19,20,20,20,19,22,27,22,19,20,20,20,19,26,30,31,31,31,31,31,28
+    db 26,20,18,19,20,20,20,19,19,25,22,19,20,20,20,20,24,24,18,20,20,20,20,26,22,20,20,20,20,20
+    db 19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,20,19
+    db 20,20,20,19,22,27,22,19,20,20,20,20,25,21,22,22,22,22,21,25,27,20,18,19,20,20,20,20,19,25
+    db 22,19,20,20,20,20,24,24,18,20,20,20,20,26,22,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28
+    db 31,31,27,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,20,19,20,20,20,19,22,27,22,19,20,20
+    db 20,20,25,19,19,19,19,19,19,24,27,20,18,19,20,19,20,20,19,25,22,19,20,20,20,20,24,24,18,20
+    db 20,20,20,26,22,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,22,20,19,20,20,20,19,22,28,22,19,20,20,20,20,25,19,20,20,20,20,19,24
+    db 27,21,19,19,20,20,20,20,19,25,22,19,20,20,20,20,23,24,18,20,20,20,20,26,23,20,20,20,20,20
+    db 19,28,28,26,27,27,27,27,26,28,31,31,27,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,19,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,20,19
+    db 20,20,20,19,22,28,22,19,20,20,20,20,25,19,20,20,20,20,19,25,27,21,20,20,20,19,20,20,19,25
+    db 22,19,20,20,20,20,23,24,18,20,20,20,20,26,23,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,17,23,25,25,25,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,18,18,18,18,18,18,18,18,18,18,18,18,18,17,22,20,19,20,20,20,19,22,28,22,19,20,20
+    db 20,20,25,19,20,20,20,20,19,25,27,21,19,20,20,19,20,20,19,25,22,19,20,20,20,20,23,24,18,20
+    db 20,20,20,26,23,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,19,25,22,23,27,18,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,19,27,27,27,27,27,27,27
+    db 27,27,27,27,27,27,27,28,21,19,20,20,20,19,22,28,22,19,20,20,20,20,25,19,20,20,20,20,19,25
+    db 27,21,19,19,18,18,18,18,18,25,22,19,20,20,20,19,23,24,18,20,20,20,20,26,23,20,20,20,20,20
+    db 19,28,28,26,27,27,27,27,26,28,31,31,27,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,20,25,21,21,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,18,27,25,26,26,26,26,26,26,26,26,26,26,26,26,26,26,21,19
+    db 20,20,20,19,22,28,22,19,20,20,20,20,25,19,20,20,20,20,19,24,27,21,19,19,22,22,22,23,23,26
+    db 21,19,19,19,19,19,23,24,18,20,20,20,20,25,23,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,19,25,22,22,26,18,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,18,27,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,21,19,20,20,20,19,22,28,22,19,20,20
+    db 20,20,25,19,20,20,20,20,19,25,27,21,19,20,30,30,30,30,29,28,22,21,22,22,22,22,24,24,18,20
+    db 20,20,20,25,23,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28,31,31,27,20,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,27,26,26,26,26,26,26,26
+    db 26,26,26,26,26,26,26,28,21,18,19,19,19,19,21,28,23,19,20,20,20,20,25,19,20,20,20,20,19,24
+    db 27,21,19,19,24,24,23,23,21,24,28,29,30,31,31,31,28,23,18,19,19,19,19,25,23,20,20,20,20,20
+    db 19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,28,21,19
+    db 20,20,20,20,22,28,23,19,20,20,20,20,25,19,20,20,20,20,19,24,27,21,19,20,20,20,20,20,19,23
+    db 29,29,29,29,29,29,27,23,19,19,19,19,19,25,23,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,18,27,27,27,27,27,27,16,16,27,27,27,27,27,27,26
+    db 27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,26,27,27,27,27,27,27,27,23,19,20,20
+    db 20,20,25,19,20,20,20,20,19,24,27,21,19,20,20,20,20,20,19,25,23,20,20,20,20,20,23,28,30,30
+    db 30,30,30,27,23,20,20,20,20,20,19,28,27,25,26,26,26,26,25,28,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,19,27,26,26,26,26,26,26,17,17,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26
+    db 26,26,26,26,26,25,25,25,25,28,28,28,28,29,28,27,22,19,19,19,19,20,25,19,20,20,20,20,19,24
+    db 27,21,19,20,20,20,20,20,19,25,22,19,19,19,19,19,21,29,31,31,31,31,31,27,24,20,20,20,19,20
+    db 19,28,24,21,23,23,23,23,22,26,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,19,27,26,26,26,26,26
+    db 26,18,17,26,25,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,26,25,25,25,26,21,21
+    db 22,22,22,22,23,27,22,18,19,19,19,19,25,19,20,20,20,20,19,24,27,21,19,20,20,20,20,20,19,25
+    db 22,19,20,20,20,19,23,25,22,22,22,22,22,26,24,19,19,19,19,19,18,28,23,21,23,22,23,22,20,26
+    db 31,31,27,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,18,22,27,26,26,26,26,27,16,16,27,26,26,26,26,26,26
+    db 26,26,26,26,26,27,27,27,27,27,27,27,27,27,26,26,26,28,20,19,20,19,19,19,22,27,26,25,26,26
+    db 25,25,25,19,19,19,19,19,19,24,27,21,20,20,20,20,20,20,19,25,22,19,20,20,20,20,23,24,18,19
+    db 19,19,19,26,25,25,25,25,25,25,23,28,29,28,29,29,29,28,28,29,31,31,27,20,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,17,20,20,20,20,20,19,16,16,18,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,27
+    db 27,27,27,27,27,27,27,28,20,19,20,20,20,19,22,27,28,29,28,29,28,28,25,18,17,17,17,17,17,23
+    db 27,21,20,20,20,20,20,20,19,25,22,19,20,20,20,20,24,24,19,20,20,20,20,26,26,30,30,30,29,29
+    db 27,29,31,31,31,31,31,31,31,31,31,31,27,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,17,16,16,17,17,17,17,17,17,16,16,16,16,16,17,17,16,16,17,16,16,16,22,20,19
+    db 20,20,20,19,22,27,24,23,23,23,23,23,26,24,24,24,24,24,24,26,27,20,19,19,19,19,19,19,19,25
+    db 22,19,20,20,20,20,24,24,19,20,20,20,20,26,24,24,24,24,24,24,23,28,30,28,29,29,29,29,29,30
+    db 31,31,27,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,21,20,19,20,20,20,19,22,27,21,19,20,20
+    db 20,20,25,25,26,25,26,26,26,27,27,22,21,21,21,21,21,21,20,25,22,19,20,20,20,20,24,24,19,20
+    db 20,20,20,26,22,19,19,19,19,19,19,27,28,26,27,27,27,27,26,28,31,31,27,20,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,22,20,19,20,20,20,19,22,27,22,19,20,20,20,20,25,19,19,19,19,19,18,24
+    db 27,26,26,26,26,26,26,26,25,26,22,19,20,20,20,19,23,24,18,20,20,20,20,26,23,20,20,20,20,20
+    db 19,28,28,26,27,27,27,27,26,28,31,31,27,20,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,20,19
+    db 20,20,20,19,22,27,22,19,20,20,20,20,25,19,20,20,20,20,19,24,27,25,25,25,25,25,25,25,25,27
+    db 21,18,19,19,19,19,23,24,18,20,20,20,20,26,23,20,20,20,20,19,19,28,28,26,27,27,27,27,26,28
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,20,19,20,20,20,19,22,27,22,19,20,20
+    db 20,20,25,19,20,20,20,20,19,24,28,20,18,19,19,19,19,19,18,24,23,21,21,21,21,21,24,24,18,20
+    db 20,20,20,26,23,20,20,20,20,20,19,27,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,22,20,19,20,20,20,19,22,27,22,19,20,20,20,20,25,19,20,20,20,20,19,24
+    db 27,21,19,20,20,20,20,20,19,24,29,30,30,30,30,29,27,23,18,19,19,19,19,26,23,20,20,20,20,20
+    db 19,28,29,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,21,20,19
+    db 20,20,20,19,22,28,22,19,20,20,20,20,25,19,20,20,20,20,19,24,27,21,20,20,20,20,20,20,19,23
+    db 29,30,29,30,30,30,29,23,19,20,19,20,19,26,23,20,20,20,20,20,19,27,29,26,27,27,27,27,26,28
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,22,20,19,20,20,20,19,22,28,22,19,20,20
+    db 20,20,25,19,20,20,20,20,19,24,27,21,20,20,20,20,20,20,19,25,23,21,21,21,21,21,24,27,26,26
+    db 26,26,26,26,23,20,20,20,20,20,19,27,29,27,27,27,27,27,27,28,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,22,20,18,19,19,19,19,22,28,22,19,20,20,20,20,25,19,20,20,20,20,19,24
+    db 27,21,20,20,20,20,20,20,20,25,22,19,19,19,19,19,22,27,28,28,28,28,28,26,23,19,19,19,19,19
+    db 19,28,26,23,24,24,24,24,23,26,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,18,18,17,17,17,17,18
+    db 17,17,17,16,17,18,18,18,18,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,18,17,18,25,21,18
+    db 19,19,19,19,22,28,22,19,20,20,20,20,25,19,20,20,20,20,19,24,27,21,20,20,20,20,20,20,20,25
+    db 22,19,20,20,20,20,23,25,21,22,22,22,22,26,23,18,17,17,17,17,17,28,23,19,20,19,20,20,18,24
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,21,22,20,21,21,21,21,21,21,22,22,22,25,22,21,21,21,21,21
+    db 21,21,21,21,21,21,21,21,21,21,21,21,21,21,21,21,21,22,19,18,19,19,18,18,19,22,20,19,19,19
+    db 19,20,25,19,20,20,20,20,19,24,27,21,20,20,20,20,20,20,20,25,22,19,20,20,20,20,24,24,18,19
+    db 19,19,19,26,25,24,24,24,24,24,24,29,28,26,26,26,26,26,26,28,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,20,19,19,19,20,20,20,19,19
+    db 18,30,26,16,17,17,17,17,17,17,19,18,20,23,19,16,17,17,17,17,17,17,17,17,17,17,17,17,17,17
+    db 17,17,17,17,17,17,17,17,18,18,18,18,18,18,18,17,19,19,19,19,19,20,26,19,20,20,20,20,19,24
+    db 27,21,20,20,20,20,20,20,20,26,22,19,20,20,20,20,24,24,19,20,20,20,20,26,24,24,24,24,24,24
+    db 23,28,31,31,31,31,31,31,30,31,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,16,17,17,17,17
+    db 16,17,17,16,16,16,16,16,16,18,19,22,22,22,22,22,23,23,22,22,22,23,22,18,18,18,18,18,18,18
+    db 20,20,21,24,20,17,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
+    db 18,18,18,18,18,18,18,19,19,19,19,19,22,19,20,20,20,20,19,24,27,21,20,20,20,20,20,20,20,26
+    db 22,19,20,20,20,20,24,24,19,20,20,20,20,26,22,19,19,19,19,18,17,27,29,27,28,28,28,28,27,28
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,17,26,27,27,27,27,27,27,27,27,27,27,27,27,27,27,28
+    db 24,16,17,17,17,17,17,17,17,17,17,16,17,18,18,18,18,18,18,18,19,19,20,22,19,18,18,18,18,18
+    db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
+    db 18,18,17,19,19,19,19,19,19,25,28,21,20,20,20,20,20,20,20,26,22,19,20,20,20,20,24,24,19,20
+    db 20,20,20,26,22,20,20,20,20,20,19,28,28,26,27,26,26,27,26,28,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,18,18,18
+    db 18,18,24,24,22,23,23,23,23,23,23,23,23,23,23,23,23,23,23,23,22,18,18,18,18,18,18,18,18,18
+    db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
+    db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,19,19,19,19,19,19,22
+    db 24,20,20,20,20,20,20,20,20,26,22,19,20,20,20,20,24,24,19,20,20,20,20,26,22,20,20,20,20,20
+    db 19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,23,25,25,25,25,26,20,17,18,18,18,18,18
+    db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
+    db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
+    db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,17,19,20,20,20,20,20,20,20,26
+    db 22,19,20,20,20,20,24,24,19,20,20,20,20,26,23,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,20,17,17,17,17,17,17,17,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
+    db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
+    db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
+    db 18,18,18,18,18,18,18,18,18,18,18,19,19,19,19,19,19,19,20,26,22,19,20,20,20,20,24,24,19,20
+    db 20,20,20,26,23,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,19,19,19,19
+    db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
+    db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
+    db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
+    db 18,19,19,19,19,19,19,18,19,25,22,19,20,20,20,20,24,24,19,20,20,20,20,26,23,20,20,20,20,20
+    db 19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,25,29,30,25,17,18,18,18,18,18,18,18,18
+    db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
+    db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
+    db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
+    db 19,19,19,20,19,19,24,24,19,20,20,20,20,26,24,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,21,28,30,25,17,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
+    db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
+    db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
+    db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,17,19,19,19,19,19,19,24,24,19,20
+    db 20,20,20,26,24,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,18
+    db 20,23,24,20,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
+    db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
+    db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
+    db 18,18,18,18,18,18,18,18,18,18,18,19,18,18,18,18,21,21,19,20,20,20,20,26,24,20,20,20,20,20
+    db 19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,24,20,17,18,18,18,18,18
+    db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
+    db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
+    db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
+    db 18,18,18,18,18,18,18,19,19,19,19,19,19,26,25,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,18,24,24,24,24,25,25,25,25,25,25,25,25,25,25,25,18,18
+    db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
+    db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
+    db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,19,19
+    db 19,19,19,27,26,20,20,20,20,20,19,28,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,18,24,26,26,29,29,29,29,29,29,29,29,29,30,29,18,18,18,18,18,18,18,18,18,18,18,18
+    db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
+    db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
+    db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,19,19,19,19,18,23,22,19,19,19,20,19
+    db 19,27,28,26,27,27,27,27,26,28,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,17,16,16,16,16,18,23,22,22,22,22,22,22,22,22,22,21,21,21,21,21,21,22,21,21,20,21,21
+    db 19,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
+    db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
+    db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,19,19,19,19,19,18,27,28,26,27,27,27,27,26,28
+    db 31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,17,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,19,20
+    db 20,19,18,18,18,18,18,17,17,17,17,18,18,18,18,27,27,23,18,17,19,18,18,18,18,18,19,19,19,19
+    db 19,19,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
+    db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
+    db 18,18,18,18,18,19,19,19,19,19,18,27,27,25,26,26,26,26,24,26,31,31,27,19,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,17,18,16,19,18,17,17,17,17,17,18,18,18,18,18,18,17,17,17,17,17,17,17,17
+    db 17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17
+    db 17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17
+    db 17,27,24,21,22,22,22,22,20,24,31,31,27,19,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,19
+    db 19,18,18,19,19,18,19,19,19,19,19,19,19,19,19,19,19,18,18,18,18,18,18,18,18,18,18,18,18,18
+    db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18
+    db 18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,18,19,24,21,22,22,22,22,20,24
+    db 31,30,18,18,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,18,27,27,27,27,27,27,27,27,27
+    db 27,27,27,27,27,27,27,27,27,27,27,27,27,27,27,26,27,27,27,27,27,27,27,27,27,27,26,26,27,27
+    db 27,27,27,27,27,27,27,27,27,27,26,26,26,27,27,26,26,27,27,26,26,26,27,26,26,26,26,26,26,26
+    db 26,26,26,26,27,27,26,26,27,26,18,16,16,17,27,27,27,27,18,17,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17
+    db 17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17
+    db 17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17,17
+    db 17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,17,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16,16
+    db 16,16,16,16,16,16,16,16,16,16
 end
