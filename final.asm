@@ -340,9 +340,6 @@ gameStart proc
             .endif
         .endif
         
-        invoke printScore, [redball.score], 28h, 19, 1
-        invoke printScore, [blueBall.score], 37h, 19, 23
-        
         call draw
         
         ; VSync
@@ -368,6 +365,9 @@ gameStart proc
         mov cx, (320 * 200) / 4
         rep movsd
         pop ds
+        
+        invoke printScore, [redball.score], 28h, 19, 1
+        invoke printScore, [blueBall.score], 37h, 19, 23
         
         ; game over judgement
         .if sbyte ptr [redBall.score] >= 10
@@ -1003,8 +1003,6 @@ exitGame proc
     int 10h
     .exit
 exitGame endp
-
-
 
 ; wall effect function
 noEffect proc
