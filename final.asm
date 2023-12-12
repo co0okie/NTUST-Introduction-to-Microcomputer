@@ -164,7 +164,7 @@ main proc
     rdtsc
     mov [randomNumber], eax
     
-    call getCPUClockPeriod
+    call getCPUClockPeriod ; accurate
     
     .while 1 ; game cycle
         ; cover image
@@ -262,14 +262,14 @@ gameStart proc
     mov [redBall.score], 0
     mov [blueBall.score], 0
     
-    call generateWall
+    call generateWall ; random 26 walls
     
     mov ax, 03h
     int 33h
-    mov [mouseButtonStatus], bl
+    mov [mouseButtonStatus], bl ; refresh
     
     rdtsc
-    mov [lastTimerCount], eax
+    mov [lastTimerCount], eax ; refresh
     
     ; reset game status and choose random player to start
     mov [gameStatus], 0
@@ -282,16 +282,16 @@ gameStart proc
         or [gameStatus], 00000100b ; next is blue
     .endif
     
-    .while 1
+    .while 1 ; animation
         ; clear backbuffer
-        mov ax, backBuffer
+        mov ax, backBuffer ; flikering
         mov es, ax
         xor eax, eax
         xor di, di
         mov cx, (320 * 200) / 4
         rep stosd
         
-        ; get dt
+        ; get dt, loop time
         rdtsc
         mov ebx, eax
         sub eax, [lastTimerCount]
@@ -307,9 +307,9 @@ gameStart proc
         invoke step, addr blueBall
         fstp st ; st: []
         
-        call clickHandler
+        call clickHandler ; shoot ball
 
-        ; wall collision
+        ; wall collision, ball rebound, wall effect
         fld [heightMinusRadius] ; st: [h - r]
         fld [widthMinusRadius] ; st: [w - r][h - r]
         fld [circleRadius] ; st: [r][w - r][h - r]
@@ -334,9 +334,9 @@ gameStart proc
             .endif
         .endif
         
-        call draw
+        call draw ; line, ball, wall
         
-        ; VSync
+        ; VSync, prevent tearing, vertical retrace
         ; https://stackoverflow.com/questions/67066755/assembly-x86-16-bit-vsync-screen-tearing
         mov dx, 03dah
         @@:
