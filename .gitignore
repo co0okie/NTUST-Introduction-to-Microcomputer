@@ -1,0 +1,18 @@
+# 忽略編譯產物
+*.exe
+*.obj
+*.lst
+*.sbr
+*.map
+
+# 忽略 CodeView / Debugger 暫存檔
+*.sts
+*.cv4
+*.tr
+
+# 忽略系統縮圖或暫存
+Thumbs.db
+Desktop.ini
+
+# 忽略整個 Masm 工具鏈 (如果還殘留在資料夾內)
+Masm615/
